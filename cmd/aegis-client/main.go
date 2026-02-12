@@ -3,18 +3,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"time"
 
-	"github.com/aegis/parental-control/internal/adapter/http"
+	httpadapter "github.com/aegis/parental-control/internal/adapter/http"
 	"github.com/aegis/parental-control/internal/adapter/windows"
 	"github.com/aegis/parental-control/internal/usecase/client"
-	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -26,7 +28,8 @@ type config struct {
 func main() {
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
 	installServer := installCmd.String("server-url", "", "Server URL (e.g. http://server:8080)")
-	installClientID := installCmd.String("client-id", "", "Client ID (optional, will be generated)")
+	installClientID := installCmd.String("client-id", "", "Client ID (from web UI, or omit with --client-name)")
+	installClientName := installCmd.String("client-name", "", "Client name (creates on server if --client-id not set)")
 
 	uninstallCmd := flag.NewFlagSet("uninstall", flag.ExitOnError)
 
@@ -41,7 +44,10 @@ func main() {
 		if *installServer == "" {
 			log.Fatal("--server-url required")
 		}
-		install(*installServer, *installClientID)
+		if *installClientID == "" && *installClientName == "" {
+			log.Fatal("--client-id or --client-name required")
+		}
+		install(*installServer, *installClientID, *installClientName)
 	case "uninstall":
 		uninstallCmd.Parse(os.Args[2:])
 		uninstall()
@@ -67,7 +73,7 @@ func runService() {
 		log.Fatal("server_url and client_id required in config")
 	}
 
-	fetcher := http.NewHTTPConfigFetcher(cfg.ServerURL, cfg.ClientID)
+	fetcher := httpadapter.NewHTTPConfigFetcher(cfg.ServerURL, cfg.ClientID)
 	ctrl := windows.NewUserControl()
 
 	var lastVersion string
@@ -99,9 +105,14 @@ func runService() {
 	}
 }
 
-func install(serverURL, clientID string) {
+func install(serverURL, clientID, clientName string) {
 	if clientID == "" {
-		clientID = uuid.New().String()
+		// Create client on server
+		id, err := createClientOnServer(serverURL, clientName)
+		if err != nil {
+			log.Fatalf("Create client on server: %v", err)
+		}
+		clientID = id
 	}
 	installDir := "C:\\Program Files\\Aegis"
 	if err := os.MkdirAll(installDir, 0755); err != nil {
@@ -128,7 +139,29 @@ func install(serverURL, clientID string) {
 	}
 	fmt.Printf("Installed successfully.\n")
 	fmt.Printf("Client ID: %s\n", clientID)
-	fmt.Printf("Компьютер появится в веб-интерфейсе после первого подключения.\n")
+	fmt.Printf("Управление: %s\n", serverURL)
+}
+
+func createClientOnServer(serverURL, name string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"name": name})
+	resp, err := http.Post(serverURL+"/api/clients", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("server returned %d", resp.StatusCode)
+	}
+	var r struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return "", err
+	}
+	if r.ID == "" {
+		return "", fmt.Errorf("server returned empty client id")
+	}
+	return r.ID, nil
 }
 
 func uninstall() {
@@ -147,8 +180,13 @@ func copyFile(src, dst string) error {
 
 func createService(exePath string) error {
 	exec.Command("sc", "delete", "AegisClient").Run() // remove if exists
-	exec.Command("sc", "create", "AegisClient", "binPath="+exePath, "start=auto", "DisplayName=Aegis Parental Control Client").Run()
-	exec.Command("sc", "start", "AegisClient").Run()
+	time.Sleep(500 * time.Millisecond)
+	if out, err := exec.Command("sc", "create", "AegisClient", "binPath="+exePath, "start=auto", "DisplayName=Aegis Parental Control Client").CombinedOutput(); err != nil {
+		return fmt.Errorf("sc create: %v: %s", err, out)
+	}
+	if out, err := exec.Command("sc", "start", "AegisClient").CombinedOutput(); err != nil {
+		return fmt.Errorf("sc start: %v: %s", err, out)
+	}
 	return nil
 }
 

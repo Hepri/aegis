@@ -1,0 +1,4 @@
+# For local run (without install): copy to aegis-client.yaml
+# Or use: aegis-client.exe install --server-url http://server:8080 --client-name "PC Name"
+server_url: http://192.168.0.234:8080
+client_id: <uuid>
