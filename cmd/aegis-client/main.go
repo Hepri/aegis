@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	httpadapter "github.com/aegis/parental-control/internal/adapter/http"
@@ -57,6 +58,21 @@ func main() {
 }
 
 func runService() {
+	// Setup logging to file in same directory as exe
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Get executable path: %v", err)
+	}
+	exeDir := filepath.Dir(exePath)
+	logPath := filepath.Join(exeDir, "aegis-client.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("Open log file: %v", err)
+	}
+	defer logFile.Close()
+	log.SetOutput(logFile)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
 	cfgPath := "C:\\Program Files\\Aegis\\aegis-client.yaml"
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		cfgPath = "aegis-client.yaml"
