@@ -1,0 +1,301 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+  background: #1a1a2e;
+  color: #eee;
+}
+header {
+  margin-bottom: 2rem;
+}
+header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+header p {
+  margin: 0.25rem 0 0;
+  color: #888;
+}
+section {
+  margin-bottom: 2rem;
+}
+h2 {
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+}
+h3 {
+  font-size: 1rem;
+  margin: 1rem 0 0.5rem;
+}
+select, button {
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #16213e;
+  color: #eee;
+}
+select {
+  min-width: 200px;
+  margin-right: 0.5rem;
+}
+button {
+  cursor: pointer;
+  margin-right: 0.5rem;
+}
+button:hover {
+  background: #1f3460;
+}
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+li {
+  padding: 1rem;
+  border-bottom: 1px solid #333;
+  background: #16213e;
+  border-radius: 6px;
+  margin-bottom: 0.75rem;
+}
+.userCard {
+  display: block;
+}
+.userHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.userName {
+  font-weight: 600;
+  font-size: 1.1rem;
+  margin-right: 0.5rem;
+}
+.userTempAccess {
+  background: #0f3d0f;
+  padding: 0.5rem;
+  border-radius: 4px;
+  margin: 0.5rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.userBlock {
+  background: #3d0f0f;
+  padding: 0.5rem;
+  border-radius: 4px;
+  margin: 0.5rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.badgeRed {
+  color: #e74c3c;
+}
+.tempAccessTime {
+  font-size: 0.9rem;
+}
+.userActions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.grantAccessControl {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.smallSelect {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+}
+.smallInput {
+  width: 50px;
+  padding: 0.3rem;
+  font-size: 0.9rem;
+}
+.customDuration {
+  display: inline-flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+.primaryBtn {
+  background: #27ae60;
+  border-color: #229954;
+}
+.primaryBtn:hover {
+  background: #229954;
+}
+.dangerBtn {
+  background: #c0392b;
+  border-color: #a93226;
+}
+.dangerBtn:hover {
+  background: #a93226;
+}
+.smallBtn {
+  padding: 0.2rem 0.4rem;
+  font-size: 0.85rem;
+}
+.schedule-day {
+  margin-bottom: 1rem;
+}
+.schedule-day label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-weight: 500;
+}
+.interval {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.interval input {
+  padding: 0.25rem;
+  width: 80px;
+  background: #16213e;
+  border: 1px solid #444;
+  color: #eee;
+  border-radius: 4px;
+}
+
+.clientIdBlock {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: #16213e;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.clientIdBlock label {
+  font-weight: 500;
+  margin: 0;
+}
+
+.clientIdBlock code {
+  flex: 1;
+  min-width: 200px;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+.deleteBtn {
+  color: #e74c3c;
+  border-color: #c0392b;
+}
+
+.deleteBtn:hover {
+  background: #c0392b;
+  color: #fff;
+}
+
+.configPreview {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: #0f0f1a;
+  border-radius: 6px;
+  border: 1px solid #333;
+}
+
+.configPreview h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+  color: #eee;
+}
+
+.configPreviewHint {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.configPreview .userIntervals {
+  margin-top: 0.75rem;
+}
+
+.configPreview .userIntervals:first-child {
+  margin-top: 0;
+}
+
+.configPreview .userName {
+  font-weight: 600;
+  color: #eee;
+}
+
+.configPreview .dayBlock {
+  margin-top: 0.5rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid #444;
+}
+
+.configPreview .dayLabel {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.configPreview .intervalsList {
+  margin-top: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.requestList {
+  margin-bottom: 0.75rem;
+  min-height: 2rem;
+}
+
+.requestItem {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0.5rem;
+  background: #16213e;
+  border-radius: 4px;
+  margin-bottom: 0.25rem;
+}
+
+.requestItem .deleteBtn {
+  padding: 0.2rem 0.5rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.badge {
+  font-size: 0.75rem;
+  color: #2ecc71;
+  margin-left: 0.25rem;
+}
+
+.emptyHint {
+  color: #888;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.quickActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.quickActions input[type="number"] {
+  width: 50px;
+  padding: 0.25rem 0.5rem;
+  background: #16213e;
+  border: 1px solid #444;
+  color: #eee;
+  border-radius: 4px;
+}

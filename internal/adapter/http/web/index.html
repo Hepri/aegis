@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis — Родительский контроль</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <base href="/">
+</head>
+<body>
+  <header>
+    <h1>Aegis</h1>
+    <p>Родительский контроль</p>
+  </header>
+  <main>
+    <section>
+      <h2>Выбор компьютера</h2>
+      <select id="clientSelect">
+        <option value="">— Выберите компьютер —</option>
+      </select>
+      <button id="addClient">+ Добавить компьютер</button>
+    </section>
+    <section id="clientSection" style="display:none">
+      <div class="clientIdBlock">
+        <label>Client ID (для установки):</label>
+        <code id="clientIdDisplay"></code>
+        <button id="copyClientId" type="button">Копировать</button>
+        <button id="deleteClient" type="button" class="deleteBtn">Удалить компьютер</button>
+      </div>
+      <div id="configPreview" class="configPreview">
+        <h3>Интервалы доступа (то, что клиент получает сейчас)</h3>
+        <p class="configPreviewHint">Сегодня + завтра, человекопонятный формат</p>
+        <div id="configPreviewContent"></div>
+      </div>
+      <h2>Пользователи</h2>
+      <ul id="userList"></ul>
+      <button id="addUser">+ Добавить пользователя</button>
+      <h3>Расписание</h3>
+      <div id="scheduleEditor"></div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

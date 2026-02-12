@@ -1,0 +1,33 @@
+{
+  "clients": {
+    "ca54500a-6cf7-4c97-b2b7-90c7104ab8ed": {
+      "id": "ca54500a-6cf7-4c97-b2b7-90c7104ab8ed",
+      "name": "Sasha PC",
+      "users": [
+        {
+          "id": "9c7562a3-1caf-46be-8492-276f7442d039",
+          "name": "sasha",
+          "username": "sasha",
+          "schedule": {
+            "monday": [
+              {
+                "start": "07:00",
+                "end": "13:15"
+              }
+            ],
+            "thursday": [
+              {
+                "start": "07:00",
+                "end": "13:15"
+              },
+              {
+                "start": "18:00",
+                "end": "19:30"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
