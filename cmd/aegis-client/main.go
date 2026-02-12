@@ -16,6 +16,7 @@ import (
 
 	httpadapter "github.com/aegis/parental-control/internal/adapter/http"
 	"github.com/aegis/parental-control/internal/adapter/windows"
+	"github.com/aegis/parental-control/internal/domain"
 	"github.com/aegis/parental-control/internal/usecase/client"
 	"github.com/kardianos/service"
 	"gopkg.in/yaml.v3"
@@ -94,9 +95,34 @@ func (p *program) run() {
 	log.Printf("Creating user control")
 	ctrl := windows.NewUserControl()
 
+	var currentConfig *domain.ClientConfig
 	var lastVersion string
+	var lastState map[string]bool
 
-	// Apply on startup
+	// Config fetch goroutine (long-poll)
+	go func() {
+		for {
+			select {
+			case <-p.exit:
+				return
+			default:
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			fetched, err := fetcher.FetchConfig(ctx, lastVersion)
+			cancel()
+			if err != nil {
+				log.Printf("Fetch config error: %v", err)
+			} else if fetched != nil {
+				if fetched.Version != lastVersion {
+					log.Printf("Config updated: version %s -> %s", lastVersion, fetched.Version)
+					currentConfig = fetched
+					lastVersion = fetched.Version
+				}
+			}
+		}
+	}()
+
+	// Initial config fetch
 	log.Printf("Fetching initial config from server...")
 	ctx := context.Background()
 	fetched, err := fetcher.FetchConfig(ctx, "")
@@ -104,46 +130,26 @@ func (p *program) run() {
 		log.Printf("Failed to fetch initial config: %v", err)
 	} else if fetched != nil {
 		log.Printf("Initial config received, version: %s, users: %d", fetched.Version, len(fetched.Users))
-		log.Printf("Applying access rules...")
-		client.ApplyAccess(ctrl, fetched, time.Now())
+		currentConfig = fetched
 		lastVersion = fetched.Version
-		log.Printf("Access rules applied successfully")
+		lastState = client.ApplyAccessIfNeeded(ctrl, fetched, time.Now(), nil)
 	} else {
 		log.Printf("No config received (server may not have this client registered)")
 	}
 
-	log.Printf("Starting periodic config check (every 1 minute)")
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
+	// State check every 10 seconds: compare required vs last applied
+	log.Printf("Starting state check every 10 seconds")
+	stateTicker := time.NewTicker(10 * time.Second)
+	defer stateTicker.Stop()
 
-	iteration := 0
 	for {
 		select {
 		case <-p.exit:
 			log.Printf("Service stopping")
 			return
-		case <-ticker.C:
-			iteration++
-			log.Printf("=== Config check iteration %d ===", iteration)
-			log.Printf("Fetching config (last version: %s)...", lastVersion)
-			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-			fetched, err := fetcher.FetchConfig(ctx, lastVersion)
-			cancel()
-
-			if err != nil {
-				log.Printf("Fetch config error: %v", err)
-			} else if fetched != nil {
-				if fetched.Version != lastVersion {
-					log.Printf("Config updated: version %s -> %s, users: %d", lastVersion, fetched.Version, len(fetched.Users))
-					log.Printf("Applying new access rules...")
-					client.ApplyAccess(ctrl, fetched, time.Now())
-					lastVersion = fetched.Version
-					log.Printf("Access rules updated successfully")
-				} else {
-					log.Printf("Config unchanged (version: %s)", lastVersion)
-				}
-			} else {
-				log.Printf("No config received")
+		case <-stateTicker.C:
+			if currentConfig != nil {
+				lastState = client.ApplyAccessIfNeeded(ctrl, currentConfig, time.Now(), lastState)
 			}
 		}
 	}
