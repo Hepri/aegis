@@ -17,10 +17,14 @@ const (
 
 type Handler struct {
 	repo port.ConfigRepository
+	loc  *time.Location
 }
 
-func NewHandler(repo port.ConfigRepository) *Handler {
-	return &Handler{repo: repo}
+func NewHandler(repo port.ConfigRepository, loc *time.Location) *Handler {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return &Handler{repo: repo, loc: loc}
 }
 
 func (h *Handler) ServeConfig(w http.ResponseWriter, r *http.Request) {

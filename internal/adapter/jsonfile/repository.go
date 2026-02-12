@@ -55,6 +55,7 @@ type Repository struct {
 	clients     map[string]*clientState
 	subscribers map[string][]chan struct{}
 	subMu       sync.Mutex
+	loc         *time.Location
 }
 
 type clientState struct {
@@ -68,16 +69,24 @@ type clientState struct {
 	ComputedConfig          *domain.ClientConfig
 }
 
-func New(filePath string) (*Repository, error) {
+func New(filePath string, loc *time.Location) (*Repository, error) {
+	if loc == nil {
+		loc = time.UTC
+	}
 	r := &Repository{
 		filePath:    filePath,
 		clients:     make(map[string]*clientState),
 		subscribers: make(map[string][]chan struct{}),
+		loc:         loc,
 	}
 	if err := r.load(); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	return r, nil
+}
+
+func (r *Repository) now() time.Time {
+	return time.Now().In(r.loc)
 }
 
 func (r *Repository) load() error {
@@ -204,7 +213,7 @@ func (r *Repository) GetClient(ctx context.Context, clientID string) (*port.Clie
 		return nil, nil
 	}
 	// Clean up expired temp access and blocks
-	now := time.Now()
+	now := r.now()
 	needsSave := false
 
 	// Filter expired temporary access
@@ -235,7 +244,7 @@ func (r *Repository) GetClient(ctx context.Context, clientID string) (*port.Clie
 			cs.LastSentVersion = uuid.New().String()
 		}
 		state := r.toPortState(cs)
-		config, _ := server.ComputeClientConfig(time.Now(), state, true)
+		config, _ := server.ComputeClientConfig(r.now(), state, true)
 		cs.ComputedConfig = &config
 		needsSave = true
 	}
@@ -290,7 +299,7 @@ func (r *Repository) SaveClient(ctx context.Context, client *port.ClientState) e
 	}
 
 	// Compute config on save
-	config, _ := server.ComputeClientConfig(time.Now(), client, true)
+	config, _ := server.ComputeClientConfig(r.now(), client, true)
 
 	cs := &clientState{
 		ID:                      client.ID,
@@ -339,7 +348,7 @@ func (r *Repository) AddUser(ctx context.Context, clientID string, user domain.U
 	cs.Users = append(cs.Users, user)
 	// Recompute config
 	state := r.toPortState(cs)
-	config, _ := server.ComputeClientConfig(time.Now(), state, true)
+	config, _ := server.ComputeClientConfig(r.now(), state, true)
 	cs.ComputedConfig = &config
 	r.notify(clientID)
 	return r.saveLocked()
@@ -357,7 +366,7 @@ func (r *Repository) UpdateUserSchedule(ctx context.Context, clientID, userID st
 			cs.Users[i].Schedule = schedule
 			// Recompute config
 			state := r.toPortState(cs)
-			config, _ := server.ComputeClientConfig(time.Now(), state, true)
+			config, _ := server.ComputeClientConfig(r.now(), state, true)
 			cs.ComputedConfig = &config
 			r.notify(clientID)
 			return r.saveLocked()
@@ -386,7 +395,7 @@ func (r *Repository) DeleteUser(ctx context.Context, clientID, userID string) er
 			cs.TemporaryAccessRequests = newTemp
 			// Recompute config
 			state := r.toPortState(cs)
-			config, _ := server.ComputeClientConfig(time.Now(), state, true)
+			config, _ := server.ComputeClientConfig(r.now(), state, true)
 			cs.ComputedConfig = &config
 			r.notify(clientID)
 			return r.saveLocked()
@@ -402,14 +411,14 @@ func (r *Repository) GrantTemporaryAccess(ctx context.Context, clientID, userID 
 	if !ok {
 		return nil
 	}
-	now := time.Now()
+	now := r.now()
 	cs.TemporaryAccessRequests = append(cs.TemporaryAccessRequests, port.TemporaryAccessRequest{ID: uuid.New().String(), UserID: userID, Start: now, Until: until})
 	if len(cs.TemporaryAccessRequests) > maxRequests {
 		cs.TemporaryAccessRequests = cs.TemporaryAccessRequests[len(cs.TemporaryAccessRequests)-maxRequests:]
 	}
 	// Recompute config
 	state := r.toPortState(cs)
-	config, _ := server.ComputeClientConfig(time.Now(), state, true)
+	config, _ := server.ComputeClientConfig(r.now(), state, true)
 	cs.ComputedConfig = &config
 	r.notify(clientID)
 	return r.saveLocked()
@@ -428,7 +437,7 @@ func (r *Repository) BlockClient(ctx context.Context, clientID, userID string, s
 	}
 	// Recompute config
 	state := r.toPortState(cs)
-	config, _ := server.ComputeClientConfig(time.Now(), state, true)
+	config, _ := server.ComputeClientConfig(r.now(), state, true)
 	cs.ComputedConfig = &config
 	r.notify(clientID)
 	return r.saveLocked()
@@ -446,7 +455,7 @@ func (r *Repository) DeleteBlockRequest(ctx context.Context, clientID, requestID
 			cs.BlockRequests = append(cs.BlockRequests[:i], cs.BlockRequests[i+1:]...)
 			// Recompute config
 			state := r.toPortState(cs)
-			config, _ := server.ComputeClientConfig(time.Now(), state, true)
+			config, _ := server.ComputeClientConfig(r.now(), state, true)
 			cs.ComputedConfig = &config
 			r.notify(clientID)
 			return r.saveLocked()
@@ -467,7 +476,7 @@ func (r *Repository) DeleteTemporaryAccessRequest(ctx context.Context, clientID,
 			cs.TemporaryAccessRequests = append(cs.TemporaryAccessRequests[:i], cs.TemporaryAccessRequests[i+1:]...)
 			// Recompute config
 			state := r.toPortState(cs)
-			config, _ := server.ComputeClientConfig(time.Now(), state, true)
+			config, _ := server.ComputeClientConfig(r.now(), state, true)
 			cs.ComputedConfig = &config
 			r.notify(clientID)
 			return r.saveLocked()
@@ -500,7 +509,7 @@ func (r *Repository) IncrementConfigVersion(ctx context.Context, clientID string
 	cs.LastSentVersion = uuid.New().String()
 	// Recompute config for today+tomorrow
 	state := r.toPortState(cs)
-	config, _ := server.ComputeClientConfig(time.Now(), state, true)
+	config, _ := server.ComputeClientConfig(r.now(), state, true)
 	cs.ComputedConfig = &config
 	r.notify(clientID)
 	return r.saveLocked()

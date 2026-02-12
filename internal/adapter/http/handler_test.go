@@ -62,7 +62,7 @@ func (m *mockRepo) Subscribe(ctx context.Context, clientID string) <-chan struct
 
 func TestServeConfig_NewClient(t *testing.T) {
 	repo := &mockRepo{}
-	handler := NewHandler(repo)
+	handler := NewHandler(repo, nil)
 
 	// First, save the client
 	clientState := &port.ClientState{
@@ -89,7 +89,7 @@ func TestServeConfig_NewClient(t *testing.T) {
 
 func TestServeConfig_NonexistentClient(t *testing.T) {
 	repo := &mockRepo{}
-	handler := NewHandler(repo)
+	handler := NewHandler(repo, nil)
 
 	req := httptest.NewRequest("GET", "/api/config?client_id=nonexistent", nil)
 	rr := httptest.NewRecorder()
@@ -102,11 +102,11 @@ func TestServeConfig_NonexistentClient(t *testing.T) {
 }
 
 func TestServeConfig_WithJsonfile(t *testing.T) {
-	repo, err := jsonfile.New(t.TempDir() + "/test.json")
+	repo, err := jsonfile.New(t.TempDir()+"/test.json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandler(repo)
+	handler := NewHandler(repo, nil)
 
 	// First, save the client
 	clientState := &port.ClientState{

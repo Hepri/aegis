@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/rand"
+	"log"
 	"time"
 
 	"github.com/aegis/parental-control/internal/domain"
@@ -19,17 +20,19 @@ func ApplyAccess(ctrl port.UserControl, config *domain.ClientConfig, now time.Ti
 		allowed := isWithinIntervals(now, uc.AllowedIntervals)
 		if allowed {
 			if err := ctrl.SetPassword(uc.Username, unlockPassword); err != nil {
-				// Log but continue
+				log.Printf("Failed to activate user %s: %v", uc.Username, err)
 				continue
 			}
+			log.Printf("User %s: activated (access allowed)", uc.Username)
 		} else {
 			randomPass := generateRandomPassword(lockPasswordLen)
 			if err := ctrl.SetPassword(uc.Username, randomPass); err != nil {
+				log.Printf("Failed to deactivate user %s: %v", uc.Username, err)
 				continue
 			}
+			log.Printf("User %s: deactivated (access denied)", uc.Username)
 			if err := ctrl.DisconnectUserSession(uc.Username); err != nil {
-				// Log but continue - password was changed
-				continue
+				log.Printf("User %s: session disconnect failed: %v", uc.Username, err)
 			}
 		}
 	}

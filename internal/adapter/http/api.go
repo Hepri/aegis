@@ -209,7 +209,7 @@ func (h *Handler) TemporaryAccess(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "duration must be positive", http.StatusBadRequest)
 		return
 	}
-	now := time.Now()
+	now := time.Now().In(h.loc)
 	until := now.Add(time.Duration(req.Duration) * time.Minute)
 	if err := h.repo.GrantTemporaryAccess(r.Context(), clientID, req.UserID, until); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -233,7 +233,7 @@ func (h *Handler) Block(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "duration must be positive", http.StatusBadRequest)
 		return
 	}
-	now := time.Now()
+	now := time.Now().In(h.loc)
 	until := now.Add(time.Duration(req.Duration) * time.Minute)
 	if err := h.repo.BlockClient(r.Context(), clientID, req.UserID, now, until); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
