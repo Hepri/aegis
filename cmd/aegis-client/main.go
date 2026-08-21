@@ -86,6 +86,7 @@ func (p *program) run() {
 	}
 
 	fetcher := httpadapter.NewHTTPConfigFetcher(cfg.ServerURL, cfg.ClientID)
+	fetcher.SetClientVersion(Version)
 	ctrl := windows.NewUserControl()
 	uploader := httpadapter.NewEventUploader(cfg.ServerURL, cfg.ClientID, filepath.Join(exeDir, "events-queue.jsonl"))
 
@@ -171,13 +172,28 @@ func (p *program) run() {
 			}
 			ev := client.DiffSessions(prevSessions, sessions, now)
 			if len(ev) > 0 {
+				log.Printf("activity: %d session event(s)", len(ev))
+				for _, e := range ev {
+					log.Printf("  %s user=%s sid=%d at=%s", e.Type, e.Username, e.SessionID, e.Timestamp.Format(time.RFC3339))
+				}
 				if err := uploader.Enqueue(ev); err != nil {
 					log.Printf("enqueue session events: %v", err)
 				}
+			} else if len(prevSessions) == 0 {
+				windows.LogSessions(sessions)
 			}
 			agentMgr.SyncAgents(sessions)
 
 			appStates := agentMgr.LatestStates()
+			if len(appStates) == 0 && len(sessions) > 0 {
+				// Helpful once: agents not reporting yet
+				for sid, s := range sessions {
+					if s.State == client.SessionActive {
+						log.Printf("activity: no app snapshot yet for session %d (%s)", sid, s.Username)
+						break
+					}
+				}
+			}
 			for sid, state := range appStates {
 				prev := prevApps[sid]
 				osMap := openSince[sid]
@@ -186,6 +202,7 @@ func (p *program) run() {
 				}
 				appEv, newOpen, newFS, newFK := client.DiffApps(prev, &state, now, osMap, focusSince[sid], focusKey[sid])
 				if len(appEv) > 0 {
+					log.Printf("activity: %d app event(s) for session %d", len(appEv), sid)
 					if err := uploader.Enqueue(appEv); err != nil {
 						log.Printf("enqueue app events: %v", err)
 					}

@@ -11,6 +11,8 @@ func ListSessions() (map[uint32]client.SessionSnapshot, error) {
 	return map[uint32]client.SessionSnapshot{}, nil
 }
 
+func LogSessions(sessions map[uint32]client.SessionSnapshot) {}
+
 type SessionAgentManager struct{}
 
 func NewSessionAgentManager(exePath string) *SessionAgentManager { return &SessionAgentManager{} }

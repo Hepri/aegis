@@ -3,11 +3,11 @@
 package windows
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 	"unsafe"
@@ -15,8 +15,6 @@ import (
 	"github.com/aegis/parental-control/internal/usecase/client"
 	"golang.org/x/sys/windows"
 )
-
-const SessionAgentPipeName = `\\.\pipe\aegis-session-agent`
 
 var (
 	procWTSQueryUserToken    = wtsapi32.NewProc("WTSQueryUserToken")
@@ -29,31 +27,39 @@ const (
 	securityImpersonation = 2
 	tokenPrimary          = 1
 	createUnicodeEnv      = 0x00000400
-	createNoWindow        = 0x08000000
+	createNewProcessGroup = 0x00000200
 	stillActive           = 259
 )
 
-// SessionAgentManager launches per-session helpers and receives app snapshots over a named pipe.
+func agentStateDir() string {
+	// Shared location both SYSTEM service and user session can use.
+	dir := filepath.Join(os.Getenv("ProgramData"), "Aegis", "agent")
+	_ = os.MkdirAll(dir, 0755)
+	return dir
+}
+
+func agentStatePath(sessionID uint32) string {
+	return filepath.Join(agentStateDir(), fmt.Sprintf("session-%d.json", sessionID))
+}
+
+// SessionAgentManager launches per-session helpers; they write app snapshots to ProgramData JSON files.
 type SessionAgentManager struct {
-	mu       sync.Mutex
-	exePath  string
-	agents   map[uint32]uint32 // sessionID -> pid
-	latest   map[uint32]client.AppWatchState
-	latestMu sync.RWMutex
-	stopCh   chan struct{}
+	mu      sync.Mutex
+	exePath string
+	agents  map[uint32]uint32 // sessionID -> pid
+	stopCh  chan struct{}
 }
 
 func NewSessionAgentManager(exePath string) *SessionAgentManager {
 	return &SessionAgentManager{
 		exePath: exePath,
 		agents:  make(map[uint32]uint32),
-		latest:  make(map[uint32]client.AppWatchState),
 		stopCh:  make(chan struct{}),
 	}
 }
 
 func (m *SessionAgentManager) Start() error {
-	go m.pipeServerLoop()
+	_ = os.MkdirAll(agentStateDir(), 0755)
 	return nil
 }
 
@@ -90,20 +96,36 @@ func (m *SessionAgentManager) SyncAgents(sessions map[uint32]client.SessionSnaps
 		snap, ok := sessions[sid]
 		if !ok || snap.State != client.SessionActive || !processAlive(m.agents[sid]) {
 			delete(m.agents, sid)
-			m.latestMu.Lock()
-			delete(m.latest, sid)
-			m.latestMu.Unlock()
+			_ = os.Remove(agentStatePath(sid))
 		}
 	}
 }
 
-// LatestStates returns the most recent app snapshot per session.
+// LatestStates reads the most recent app snapshot per session from disk.
 func (m *SessionAgentManager) LatestStates() map[uint32]client.AppWatchState {
-	m.latestMu.RLock()
-	defer m.latestMu.RUnlock()
-	out := make(map[uint32]client.AppWatchState, len(m.latest))
-	for k, v := range m.latest {
-		out[k] = v
+	out := make(map[uint32]client.AppWatchState)
+	m.mu.Lock()
+	sids := make([]uint32, 0, len(m.agents))
+	for sid := range m.agents {
+		sids = append(sids, sid)
+	}
+	m.mu.Unlock()
+
+	for _, sid := range sids {
+		data, err := os.ReadFile(agentStatePath(sid))
+		if err != nil {
+			continue
+		}
+		var msg agentMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		// Ignore stale files (>2 min old)
+		if !msg.WrittenAt.IsZero() && time.Since(msg.WrittenAt) > 2*time.Minute {
+			continue
+		}
+		msg.State.Username = msg.Username
+		out[sid] = msg.State
 	}
 	return out
 }
@@ -111,80 +133,8 @@ func (m *SessionAgentManager) LatestStates() map[uint32]client.AppWatchState {
 type agentMessage struct {
 	SessionID uint32               `json:"session_id"`
 	Username  string               `json:"username"`
+	WrittenAt time.Time            `json:"written_at"`
 	State     client.AppWatchState `json:"state"`
-}
-
-func (m *SessionAgentManager) pipeServerLoop() {
-	for {
-		select {
-		case <-m.stopCh:
-			return
-		default:
-		}
-		pipe, err := createPipeServer(SessionAgentPipeName)
-		if err != nil {
-			log.Printf("session-agent: create pipe: %v", err)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		err = windows.ConnectNamedPipe(pipe, nil)
-		if err != nil && err != windows.ERROR_PIPE_CONNECTED {
-			windows.CloseHandle(pipe)
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		go m.handlePipeClient(pipe)
-	}
-}
-
-func (m *SessionAgentManager) handlePipeClient(pipe windows.Handle) {
-	defer windows.CloseHandle(pipe)
-	r := &pipeFile{h: pipe}
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		var msg agentMessage
-		if err := json.Unmarshal(sc.Bytes(), &msg); err != nil {
-			continue
-		}
-		msg.State.Username = msg.Username
-		m.latestMu.Lock()
-		m.latest[msg.SessionID] = msg.State
-		m.latestMu.Unlock()
-	}
-}
-
-type pipeFile struct{ h windows.Handle }
-
-func (p *pipeFile) Read(b []byte) (int, error) {
-	var n uint32
-	err := windows.ReadFile(p.h, b, &n, nil)
-	if n > 0 {
-		return int(n), nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return 0, io.EOF
-}
-
-func createPipeServer(name string) (windows.Handle, error) {
-	namePtr, err := windows.UTF16PtrFromString(name)
-	if err != nil {
-		return 0, err
-	}
-	// NULL DACL would be ideal; InheritHandle + default SD often works for local SYSTEM pipe.
-	h, err := windows.CreateNamedPipe(
-		namePtr,
-		windows.PIPE_ACCESS_INBOUND,
-		windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT,
-		255,
-		0,
-		64*1024,
-		0,
-		nil,
-	)
-	return h, err
 }
 
 func processAlive(pid uint32) bool {
@@ -223,7 +173,6 @@ func launchSessionAgent(exePath string, sessionID uint32, username string) (uint
 	defer windows.CloseHandle(primary)
 
 	cmdLine := fmt.Sprintf(`"%s" session-agent --session-id=%d --username=%s`, exePath, sessionID, windows.EscapeArg(username))
-
 	cmdPtr, err := windows.UTF16PtrFromString(cmdLine)
 	if err != nil {
 		return 0, err
@@ -238,12 +187,14 @@ func launchSessionAgent(exePath string, sessionID uint32, username string) (uint
 	si.Desktop, _ = windows.UTF16PtrFromString(`winsta0\default`)
 	var pi windows.ProcessInformation
 
+	// Do NOT use CREATE_NO_WINDOW — agent must run on the interactive desktop
+	// to see GetForegroundWindow / EnumWindows of the user session.
 	r1, _, err = procCreateProcessAsUserW.Call(
 		uintptr(primary),
 		uintptr(unsafe.Pointer(appPtr)),
 		uintptr(unsafe.Pointer(cmdPtr)),
 		0, 0, 0,
-		createUnicodeEnv|createNoWindow,
+		createUnicodeEnv|createNewProcessGroup,
 		0, 0,
 		uintptr(unsafe.Pointer(&si)),
 		uintptr(unsafe.Pointer(&pi)),
@@ -259,50 +210,45 @@ func launchSessionAgent(exePath string, sessionID uint32, username string) (uint
 // RunSessionAgent is the entrypoint for the per-user helper process.
 func RunSessionAgent(sessionID uint32, username string) {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	logPath := filepath.Join(agentStateDir(), fmt.Sprintf("agent-%d.log", sessionID))
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666); err == nil {
+		log.SetOutput(f)
+		defer f.Close()
+	}
+	log.Printf("session-agent starting session=%d user=%s", sessionID, username)
+
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	connect := func() (windows.Handle, error) {
-		namePtr, err := windows.UTF16PtrFromString(SessionAgentPipeName)
-		if err != nil {
-			return 0, err
-		}
-		return windows.CreateFile(
-			namePtr,
-			windows.GENERIC_WRITE,
-			0,
-			nil,
-			windows.OPEN_EXISTING,
-			0,
-			0,
-		)
-	}
-
-	var pipe windows.Handle
-	for {
-		h, err := connect()
-		if err == nil {
-			pipe = h
-			break
-		}
-		time.Sleep(2 * time.Second)
-	}
-	defer windows.CloseHandle(pipe)
-
-	send := func() {
+	write := func() {
 		state := CaptureAppState(username)
-		msg := agentMessage{SessionID: sessionID, Username: username, State: state}
+		msg := agentMessage{
+			SessionID: sessionID,
+			Username:  username,
+			WrittenAt: time.Now(),
+			State:     state,
+		}
 		data, err := json.Marshal(msg)
 		if err != nil {
 			return
 		}
-		data = append(data, '\n')
-		var written uint32
-		_ = windows.WriteFile(pipe, data, &written, nil)
+		path := agentStatePath(sessionID)
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, data, 0666); err != nil {
+			log.Printf("write state: %v", err)
+			return
+		}
+		_ = os.Rename(tmp, path)
+		nApps := len(state.Apps)
+		focus := "-"
+		if state.Focused != nil {
+			focus = state.Focused.AppName
+		}
+		log.Printf("snapshot apps=%d focus=%s", nApps, focus)
 	}
 
-	send()
+	write()
 	for range ticker.C {
-		send()
+		write()
 	}
 }

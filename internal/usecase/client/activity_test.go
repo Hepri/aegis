@@ -7,6 +7,22 @@ import (
 	"github.com/aegis/parental-control/internal/domain"
 )
 
+func TestDiffSessions_LoginUsesLogonTime(t *testing.T) {
+	now := time.Now()
+	logon := now.Add(-3 * time.Minute)
+	prev := map[uint32]SessionSnapshot{}
+	curr := map[uint32]SessionSnapshot{
+		1: {SessionID: 1, Username: "kid", State: SessionActive, LogonTime: logon},
+	}
+	ev := DiffSessions(prev, curr, now)
+	if len(ev) != 1 || ev[0].Type != domain.EventSessionLogin {
+		t.Fatalf("login: %+v", ev)
+	}
+	if !ev[0].Timestamp.Equal(logon) {
+		t.Fatalf("timestamp = %v, want logon %v", ev[0].Timestamp, logon)
+	}
+}
+
 func TestDiffSessions_LoginLockUnlockLogout(t *testing.T) {
 	now := time.Now()
 	prev := map[uint32]SessionSnapshot{}

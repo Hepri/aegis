@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aegis/parental-control/internal/domain"
+	"github.com/aegis/parental-control/internal/port"
 )
 
 const activityRetentionDays = 90
@@ -151,16 +152,16 @@ func (s *ActivityStore) cleanupLocked(retentionDays int) error {
 	return nil
 }
 
-// PresenceStore keeps last_seen in memory (and optionally a small JSON file).
+// PresenceStore keeps last_seen + client binary version in a small JSON file.
 type PresenceStore struct {
 	mu       sync.RWMutex
-	lastSeen map[string]time.Time
+	presence map[string]port.ClientPresence
 	filePath string
 }
 
 func NewPresenceStore(dataFilePath string) *PresenceStore {
 	p := &PresenceStore{
-		lastSeen: make(map[string]time.Time),
+		presence: make(map[string]port.ClientPresence),
 		filePath: filepath.Join(filepath.Dir(dataFilePath), "last-seen.json"),
 	}
 	_ = p.load()
@@ -172,21 +173,50 @@ func (p *PresenceStore) load() error {
 	if err != nil {
 		return err
 	}
-	var m map[string]time.Time
-	if err := json.Unmarshal(data, &m); err != nil {
+	// New format: map[clientID]ClientPresence
+	var m map[string]port.ClientPresence
+	if err := json.Unmarshal(data, &m); err == nil && m != nil {
+		// Detect legacy map[string]time.Time (values would unmarshal with zero LastSeen if wrong)
+		legacy := map[string]time.Time{}
+		if err2 := json.Unmarshal(data, &legacy); err2 == nil {
+			// If any entry has empty LastSeen but legacy parse has times, migrate
+			needsMigrate := false
+			for id, pr := range m {
+				if pr.LastSeen.IsZero() {
+					if t, ok := legacy[id]; ok && !t.IsZero() {
+						needsMigrate = true
+						break
+					}
+				}
+			}
+			if needsMigrate || len(m) == 0 && len(legacy) > 0 {
+				m = make(map[string]port.ClientPresence, len(legacy))
+				for id, t := range legacy {
+					m[id] = port.ClientPresence{LastSeen: t}
+				}
+			}
+		}
+		p.mu.Lock()
+		p.presence = m
+		p.mu.Unlock()
+		return nil
+	}
+	// Pure legacy: {"id": "2026-..."}
+	var legacy map[string]time.Time
+	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.lastSeen = m
-	if p.lastSeen == nil {
-		p.lastSeen = make(map[string]time.Time)
+	p.presence = make(map[string]port.ClientPresence, len(legacy))
+	for id, t := range legacy {
+		p.presence[id] = port.ClientPresence{LastSeen: t}
 	}
 	return nil
 }
 
 func (p *PresenceStore) saveLocked() {
-	data, err := json.MarshalIndent(p.lastSeen, "", "  ")
+	data, err := json.MarshalIndent(p.presence, "", "  ")
 	if err != nil {
 		return
 	}
@@ -194,26 +224,31 @@ func (p *PresenceStore) saveLocked() {
 	_ = os.WriteFile(p.filePath, data, 0644)
 }
 
-func (p *PresenceStore) TouchLastSeen(ctx context.Context, clientID string) error {
+func (p *PresenceStore) TouchPresence(ctx context.Context, clientID, clientVersion string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.lastSeen[clientID] = time.Now().UTC()
+	pr := p.presence[clientID]
+	pr.LastSeen = time.Now().UTC()
+	if clientVersion != "" {
+		pr.ClientVersion = clientVersion
+	}
+	p.presence[clientID] = pr
 	p.saveLocked()
 	return nil
 }
 
-func (p *PresenceStore) GetLastSeen(ctx context.Context, clientID string) (time.Time, bool) {
+func (p *PresenceStore) GetPresence(ctx context.Context, clientID string) (port.ClientPresence, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	t, ok := p.lastSeen[clientID]
-	return t, ok
+	pr, ok := p.presence[clientID]
+	return pr, ok
 }
 
-func (p *PresenceStore) GetAllLastSeen(ctx context.Context) map[string]time.Time {
+func (p *PresenceStore) GetAllPresence(ctx context.Context) map[string]port.ClientPresence {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	out := make(map[string]time.Time, len(p.lastSeen))
-	for k, v := range p.lastSeen {
+	out := make(map[string]port.ClientPresence, len(p.presence))
+	for k, v := range p.presence {
 		out[k] = v
 	}
 	return out

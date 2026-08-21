@@ -12,6 +12,8 @@ type SessionSnapshot struct {
 	SessionID uint32
 	Username  string
 	State     SessionState
+	// LogonTime is the real Windows session logon time when known; zero if unknown.
+	LogonTime time.Time
 }
 
 // SessionState mirrors WTS connect states we care about.
@@ -44,10 +46,14 @@ func DiffSessions(prev, curr map[uint32]SessionSnapshot, now time.Time) []domain
 		p, ok := prev[id]
 		if !ok {
 			if c.State == SessionActive || c.State == SessionDisconnected {
+				ts := now
+				if !c.LogonTime.IsZero() {
+					ts = c.LogonTime
+				}
 				events = append(events, domain.ActivityEvent{
 					ID:        uuid.New().String(),
 					Type:      domain.EventSessionLogin,
-					Timestamp: now,
+					Timestamp: ts,
 					Username:  c.Username,
 					SessionID: id,
 				})

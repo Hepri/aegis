@@ -38,23 +38,25 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type clientInfo struct {
-		ID       string     `json:"id"`
-		Name     string     `json:"name"`
-		LastSeen *time.Time `json:"last_seen,omitempty"`
-		Online   bool       `json:"online"`
+		ID            string     `json:"id"`
+		Name          string     `json:"name"`
+		LastSeen      *time.Time `json:"last_seen,omitempty"`
+		Online        bool       `json:"online"`
+		ClientVersion string     `json:"client_version,omitempty"`
 	}
 	result := make([]clientInfo, 0, len(clients))
-	var allSeen map[string]time.Time
+	var allPresence map[string]port.ClientPresence
 	if h.presence != nil {
-		allSeen = h.presence.GetAllLastSeen(r.Context())
+		allPresence = h.presence.GetAllPresence(r.Context())
 	}
 	now := time.Now()
 	for _, c := range clients {
 		info := clientInfo{ID: c.ID, Name: c.Name}
-		if t, ok := allSeen[c.ID]; ok {
-			tt := t
+		if pr, ok := allPresence[c.ID]; ok {
+			tt := pr.LastSeen
 			info.LastSeen = &tt
-			info.Online = now.Sub(t) < 2*time.Minute
+			info.Online = now.Sub(pr.LastSeen) < 2*time.Minute
+			info.ClientVersion = pr.ClientVersion
 		}
 		result = append(result, info)
 	}
@@ -120,6 +122,7 @@ func (h *Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 		TemporaryAccessRequests []port.TemporaryAccessRequest `json:"temporary_access_requests"`
 		LastSeen                *time.Time                    `json:"last_seen,omitempty"`
 		Online                  bool                          `json:"online"`
+		ClientVersion           string                        `json:"client_version,omitempty"`
 	}{
 		ID:                      state.ID,
 		Name:                    state.Name,
@@ -127,10 +130,11 @@ func (h *Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 		TemporaryAccessRequests: state.TemporaryAccessRequests,
 	}
 	if h.presence != nil {
-		if t, ok := h.presence.GetLastSeen(r.Context(), clientID); ok {
-			tt := t
+		if pr, ok := h.presence.GetPresence(r.Context(), clientID); ok {
+			tt := pr.LastSeen
 			resp.LastSeen = &tt
-			resp.Online = time.Now().Sub(t) < 2*time.Minute
+			resp.Online = time.Now().Sub(pr.LastSeen) < 2*time.Minute
+			resp.ClientVersion = pr.ClientVersion
 		}
 	}
 	for _, u := range state.Users {
@@ -331,7 +335,7 @@ func (h *Handler) PostEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.presence != nil {
-		_ = h.presence.TouchLastSeen(r.Context(), clientID)
+		_ = h.presence.TouchPresence(r.Context(), clientID, "")
 	}
 	w.WriteHeader(http.StatusOK)
 }

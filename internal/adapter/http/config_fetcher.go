@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/aegis/parental-control/internal/domain"
@@ -12,9 +13,10 @@ import (
 
 // HTTPConfigFetcher fetches config via long-poll from server
 type HTTPConfigFetcher struct {
-	baseURL  string
-	clientID string
-	client   *http.Client
+	baseURL        string
+	clientID       string
+	clientVersion  string
+	client         *http.Client
 }
 
 func NewHTTPConfigFetcher(baseURL, clientID string) *HTTPConfigFetcher {
@@ -27,14 +29,24 @@ func NewHTTPConfigFetcher(baseURL, clientID string) *HTTPConfigFetcher {
 	}
 }
 
+// SetClientVersion sets the binary version reported on each long-poll.
+func (f *HTTPConfigFetcher) SetClientVersion(v string) {
+	f.clientVersion = v
+}
+
 // FetchConfig long-polls until config changes. If version is not empty, sends it so server
 // can respond immediately when config version differs.
 func (f *HTTPConfigFetcher) FetchConfig(ctx context.Context, version string) (*domain.ClientConfig, error) {
-	url := fmt.Sprintf("%s/api/config?client_id=%s", f.baseURL, f.clientID)
+	q := url.Values{}
+	q.Set("client_id", f.clientID)
 	if version != "" {
-		url = fmt.Sprintf("%s&version=%s", url, version)
+		q.Set("version", version)
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if f.clientVersion != "" {
+		q.Set("client_version", f.clientVersion)
+	}
+	reqURL := fmt.Sprintf("%s/api/config?%s", f.baseURL, q.Encode())
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}

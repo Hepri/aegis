@@ -114,13 +114,14 @@ function formatDateTime(isoStr) {
 function updateOnlineStatus() {
   const el = document.getElementById('onlineStatus');
   if (!el || !currentClient) return;
+  const ver = currentClient.client_version ? ` · v${currentClient.client_version}` : '';
   if (currentClient.online) {
-    el.textContent = 'онлайн';
+    el.textContent = 'онлайн' + ver;
     el.className = 'onlineStatus online';
   } else {
     el.textContent = currentClient.last_seen
-      ? `офлайн (был ${formatDateTime(currentClient.last_seen)})`
-      : 'офлайн';
+      ? `офлайн (был ${formatDateTime(currentClient.last_seen)})${ver}`
+      : 'офлайн' + ver;
     el.className = 'onlineStatus offline';
   }
 }
@@ -490,7 +491,8 @@ async function loadClients() {
   sel.innerHTML = '<option value="">— Выберите компьютер —</option>' +
     clients.map(c => {
       const mark = c.online ? ' ●' : '';
-      return `<option value="${c.id}">${c.name || c.id}${mark}</option>`;
+      const ver = c.client_version ? ` [${c.client_version}]` : '';
+      return `<option value="${c.id}">${c.name || c.id}${mark}${ver}</option>`;
     }).join('');
   if (prev) {
     sel.value = prev;

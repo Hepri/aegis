@@ -71,7 +71,7 @@ func (h *Handler) ServeConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.presence != nil {
-		_ = h.presence.TouchLastSeen(ctx, clientID)
+		_ = h.presence.TouchPresence(ctx, clientID, r.URL.Query().Get("client_version"))
 	}
 
 	// Get precomputed config (always today+tomorrow, full)
