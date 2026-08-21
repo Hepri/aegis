@@ -22,6 +22,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Version is set via -ldflags "-X main.Version=..."
+var Version = "dev"
+
 type config struct {
 	ServerURL string `yaml:"server_url"`
 	ClientID  string `yaml:"client_id"`
@@ -43,7 +46,6 @@ func (p *program) Stop(s service.Service) error {
 }
 
 func (p *program) run() {
-	// Setup logging to file in same directory as exe
 	exePath, err := os.Executable()
 	if err != nil {
 		log.Printf("Get executable path: %v", err)
@@ -60,46 +62,46 @@ func (p *program) run() {
 	}
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	log.Printf("=== Aegis Client starting ===")
+	log.Printf("=== Aegis Client starting === version=%s", Version)
 	log.Printf("Executable path: %s", exePath)
-	log.Printf("Log file: %s", logPath)
 
-	cfgPath := "C:\\Program Files\\Aegis\\aegis-client.yaml"
+	cfgPath := `C:\Program Files\Aegis\aegis-client.yaml`
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		log.Printf("Config not found at %s, trying current directory", cfgPath)
 		cfgPath = filepath.Join(exeDir, "aegis-client.yaml")
-	} else {
-		log.Printf("Found config at: %s", cfgPath)
 	}
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		log.Printf("Read config from %s: %v", cfgPath, err)
 		return
 	}
-	log.Printf("Config file read successfully, size: %d bytes", len(data))
 
 	var cfg config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		log.Printf("Parse config YAML: %v", err)
 		return
 	}
-	log.Printf("Config parsed: server_url=%s, client_id=%s", cfg.ServerURL, cfg.ClientID)
-
 	if cfg.ServerURL == "" || cfg.ClientID == "" {
 		log.Printf("server_url and client_id required in config")
 		return
 	}
 
-	log.Printf("Creating config fetcher for server: %s", cfg.ServerURL)
 	fetcher := httpadapter.NewHTTPConfigFetcher(cfg.ServerURL, cfg.ClientID)
-	log.Printf("Creating user control")
 	ctrl := windows.NewUserControl()
+	uploader := httpadapter.NewEventUploader(cfg.ServerURL, cfg.ClientID, filepath.Join(exeDir, "events-queue.jsonl"))
+
+	agentMgr := windows.NewSessionAgentManager(exePath)
+	_ = agentMgr.Start()
+	defer agentMgr.Stop()
 
 	var currentConfig *domain.ClientConfig
 	var lastVersion string
 	var lastState map[string]bool
+	prevSessions := map[uint32]client.SessionSnapshot{}
+	prevApps := map[uint32]*client.AppWatchState{}
+	openSince := map[uint32]map[string]time.Time{}
+	focusSince := map[uint32]*time.Time{}
+	focusKey := map[uint32]string{}
 
-	// Config fetch goroutine (long-poll)
 	go func() {
 		for {
 			select {
@@ -112,17 +114,23 @@ func (p *program) run() {
 			cancel()
 			if err != nil {
 				log.Printf("Fetch config error: %v", err)
-			} else if fetched != nil {
-				if fetched.Version != lastVersion {
-					log.Printf("Config updated: version %s -> %s", lastVersion, fetched.Version)
-					currentConfig = fetched
-					lastVersion = fetched.Version
-				}
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			if fetched == nil {
+				continue
+			}
+			if fetched.Version != lastVersion {
+				log.Printf("Config updated: version %s -> %s", lastVersion, fetched.Version)
+				currentConfig = fetched
+				lastVersion = fetched.Version
+			}
+			if fetched.Update != nil {
+				windows.ApplyUpdateIfNeeded(Version, fetched.Update, cfg.ServerURL)
 			}
 		}
 	}()
 
-	// Initial config fetch
 	log.Printf("Fetching initial config from server...")
 	ctx := context.Background()
 	fetched, err := fetcher.FetchConfig(ctx, "")
@@ -133,14 +141,17 @@ func (p *program) run() {
 		currentConfig = fetched
 		lastVersion = fetched.Version
 		lastState = client.ApplyAccessIfNeeded(ctrl, fetched, time.Now(), nil)
-	} else {
-		log.Printf("No config received (server may not have this client registered)")
+		if fetched.Update != nil {
+			windows.ApplyUpdateIfNeeded(Version, fetched.Update, cfg.ServerURL)
+		}
 	}
 
-	// State check every 10 seconds: compare required vs last applied
-	log.Printf("Starting state check every 10 seconds")
 	stateTicker := time.NewTicker(10 * time.Second)
 	defer stateTicker.Stop()
+	activityTicker := time.NewTicker(5 * time.Second)
+	defer activityTicker.Stop()
+	uploadTicker := time.NewTicker(15 * time.Second)
+	defer uploadTicker.Stop()
 
 	for {
 		select {
@@ -151,11 +162,69 @@ func (p *program) run() {
 			if currentConfig != nil {
 				lastState = client.ApplyAccessIfNeeded(ctrl, currentConfig, time.Now(), lastState)
 			}
+		case <-activityTicker.C:
+			now := time.Now()
+			sessions, err := windows.ListSessions()
+			if err != nil {
+				log.Printf("ListSessions: %v", err)
+				continue
+			}
+			ev := client.DiffSessions(prevSessions, sessions, now)
+			if len(ev) > 0 {
+				if err := uploader.Enqueue(ev); err != nil {
+					log.Printf("enqueue session events: %v", err)
+				}
+			}
+			agentMgr.SyncAgents(sessions)
+
+			appStates := agentMgr.LatestStates()
+			for sid, state := range appStates {
+				prev := prevApps[sid]
+				osMap := openSince[sid]
+				if osMap == nil {
+					osMap = map[string]time.Time{}
+				}
+				appEv, newOpen, newFS, newFK := client.DiffApps(prev, &state, now, osMap, focusSince[sid], focusKey[sid])
+				if len(appEv) > 0 {
+					if err := uploader.Enqueue(appEv); err != nil {
+						log.Printf("enqueue app events: %v", err)
+					}
+				}
+				cp := state
+				prevApps[sid] = &cp
+				openSince[sid] = newOpen
+				focusSince[sid] = newFS
+				focusKey[sid] = newFK
+			}
+			for sid := range prevApps {
+				if _, ok := sessions[sid]; !ok {
+					delete(prevApps, sid)
+					delete(openSince, sid)
+					delete(focusSince, sid)
+					delete(focusKey, sid)
+				}
+			}
+			prevSessions = sessions
+		case <-uploadTicker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			if err := uploader.Flush(ctx); err != nil {
+				log.Printf("upload events: %v", err)
+			}
+			cancel()
 		}
 	}
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "session-agent" {
+		fs := flag.NewFlagSet("session-agent", flag.ExitOnError)
+		sid := fs.Uint("session-id", 0, "WTS session id")
+		user := fs.String("username", "", "Windows username")
+		_ = fs.Parse(os.Args[2:])
+		windows.RunSessionAgent(uint32(*sid), *user)
+		return
+	}
+
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
 	installServer := installCmd.String("server-url", "", "Server URL (e.g. http://server:8080)")
 	installClientID := installCmd.String("client-id", "", "Client ID (from web UI, or omit with --client-name)")
@@ -181,6 +250,8 @@ func main() {
 	case "uninstall":
 		uninstallCmd.Parse(os.Args[2:])
 		uninstall()
+	case "version":
+		fmt.Println(Version)
 	default:
 		runAsService()
 	}
@@ -192,7 +263,7 @@ func runAsService() {
 		Name:        "AegisClient",
 		DisplayName: "Aegis Parental Control Client",
 		Description: "Parental control client that enforces access schedules",
-		Executable:  "C:\\Program Files\\Aegis\\aegis-client.exe",
+		Executable:  `C:\Program Files\Aegis\aegis-client.exe`,
 	}
 
 	s, err := service.New(prg, svcConfig)
@@ -209,6 +280,7 @@ func runAsService() {
 func install(serverURL, clientID, clientName string) {
 	fmt.Printf("=== Aegis Client Installation ===\n")
 	fmt.Printf("Server URL: %s\n", serverURL)
+	fmt.Printf("Version: %s\n", Version)
 
 	if clientID == "" {
 		fmt.Printf("Creating client on server with name: %s\n", clientName)
@@ -222,38 +294,31 @@ func install(serverURL, clientID, clientName string) {
 		fmt.Printf("Using existing client ID: %s\n", clientID)
 	}
 
-	installDir := "C:\\Program Files\\Aegis"
+	installDir := `C:\Program Files\Aegis`
 	fmt.Printf("Creating installation directory: %s\n", installDir)
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		log.Fatalf("Create dir: %v", err)
 	}
-	fmt.Printf("Directory created\n")
 
 	cfg := config{ServerURL: serverURL, ClientID: clientID}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	cfgPath := installDir + "\\aegis-client.yaml"
-	fmt.Printf("Writing config file: %s\n", cfgPath)
+	cfgPath := installDir + `\aegis-client.yaml`
 	if err := os.WriteFile(cfgPath, data, 0644); err != nil {
 		log.Fatalf("Write config: %v", err)
 	}
-	fmt.Printf("Config file written\n")
 
 	exe, _ := os.Executable()
-	dest := installDir + "\\aegis-client.exe"
+	dest := installDir + `\aegis-client.exe`
 	fmt.Printf("Copying executable: %s -> %s\n", exe, dest)
 	if exe != dest {
 		if err := copyFile(exe, dest); err != nil {
 			log.Fatalf("Copy binary: %v", err)
 		}
-		fmt.Printf("Executable copied\n")
-	} else {
-		fmt.Printf("Executable already in target location\n")
 	}
 
-	fmt.Printf("Installing Windows service...\n")
 	prg := &program{}
 	svcConfig := &service.Config{
 		Name:        "AegisClient",
@@ -270,12 +335,9 @@ func install(serverURL, clientID, clientName string) {
 	if err := s.Install(); err != nil {
 		log.Fatalf("Install service: %v", err)
 	}
-	fmt.Printf("Service installed\n")
-
 	if err := s.Start(); err != nil {
 		log.Fatalf("Start service: %v", err)
 	}
-	fmt.Printf("Service started\n")
 
 	fmt.Printf("\n=== Installation Complete ===\n")
 	fmt.Printf("Client ID: %s\n", clientID)
@@ -310,7 +372,7 @@ func uninstall() {
 	prg := &program{}
 	svcConfig := &service.Config{
 		Name:       "AegisClient",
-		Executable: "C:\\Program Files\\Aegis\\aegis-client.exe",
+		Executable: `C:\Program Files\Aegis\aegis-client.exe`,
 	}
 	s, err := service.New(prg, svcConfig)
 	if err != nil {
@@ -321,7 +383,7 @@ func uninstall() {
 	if err := s.Uninstall(); err != nil {
 		log.Printf("Uninstall: %v", err)
 	}
-	os.RemoveAll("C:\\Program Files\\Aegis")
+	os.RemoveAll(`C:\Program Files\Aegis`)
 	fmt.Println("Uninstalled.")
 }
 

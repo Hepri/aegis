@@ -1,0 +1,2 @@
+# Allow aegis user to manage aegis-server systemd unit without a password
+aegis ALL=(ALL) NOPASSWD: /bin/systemctl start aegis-server, /bin/systemctl stop aegis-server, /bin/systemctl restart aegis-server, /bin/systemctl enable aegis-server, /bin/systemctl daemon-reload, /bin/mkdir, /bin/chown, /bin/mv, /bin/cp

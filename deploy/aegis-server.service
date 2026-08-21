@@ -1,0 +1,14 @@
+[Unit]
+Description=Aegis Parental Control Server
+After=network.target
+
+[Service]
+Type=simple
+User=aegis
+WorkingDirectory=/opt/aegis
+ExecStart=/opt/aegis/aegis-server --data /opt/aegis/aegis-data.json --updates /opt/aegis/updates --port 8080 --timezone Asia/Yekaterinburg
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -18,4 +18,5 @@ type UserAccessConfig struct {
 type ClientConfig struct {
 	Users   []UserAccessConfig `json:"users"`
 	Version string             `json:"version"`
+	Update  *ClientUpdate      `json:"update,omitempty"`
 }

@@ -81,6 +81,108 @@ const dayLabels = { monday: 'Пн', tuesday: 'Вт', wednesday: 'Ср', thursday
 let currentClientId = null;
 let currentClient = null;
 
+async function getActivity(clientId, date) {
+  const q = date ? `?date=${encodeURIComponent(date)}` : '';
+  const res = await fetch(`${API}/clients/${clientId}/activity${q}`);
+  if (!res.ok) throw new Error('activity fetch failed');
+  return res.json();
+}
+
+function todayISODate() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatDurationMs(ms) {
+  if (!ms || ms < 0) return '0м';
+  const totalMin = Math.round(ms / 60000);
+  if (totalMin < 60) return `${totalMin}м`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m ? `${h}ч ${m}м` : `${h}ч`;
+}
+
+function formatDateTime(isoStr) {
+  if (!isoStr) return '—';
+  const d = new Date(isoStr);
+  return d.toLocaleString('ru-RU', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' });
+}
+
+function updateOnlineStatus() {
+  const el = document.getElementById('onlineStatus');
+  if (!el || !currentClient) return;
+  if (currentClient.online) {
+    el.textContent = 'онлайн';
+    el.className = 'onlineStatus online';
+  } else {
+    el.textContent = currentClient.last_seen
+      ? `офлайн (был ${formatDateTime(currentClient.last_seen)})`
+      : 'офлайн';
+    el.className = 'onlineStatus offline';
+  }
+}
+
+async function renderActivity() {
+  const sessionsEl = document.getElementById('activitySessions');
+  const appsEl = document.getElementById('activityApps');
+  const timelineEl = document.getElementById('activityTimeline');
+  if (!currentClientId) {
+    sessionsEl.innerHTML = '';
+    appsEl.innerHTML = '';
+    timelineEl.innerHTML = '';
+    return;
+  }
+  const dateInput = document.getElementById('activityDate');
+  if (!dateInput.value) dateInput.value = todayISODate();
+  try {
+    const data = await getActivity(currentClientId, dateInput.value);
+    const sessions = data.sessions || [];
+    if (sessions.length === 0) {
+      sessionsEl.innerHTML = '<p class="emptyHint">Нет сессий за этот день</p>';
+    } else {
+      sessionsEl.innerHTML = `<table class="activityTable"><thead><tr>
+        <th>Пользователь</th><th>Вход</th><th>Выход</th><th>Длительность</th><th>Блокировка экрана</th>
+      </tr></thead><tbody>${sessions.map(s => `<tr>
+        <td>${s.username || '—'}</td>
+        <td>${formatDateTime(s.login)}</td>
+        <td>${s.logout ? formatDateTime(s.logout) : 'ещё открыта'}</td>
+        <td>${formatDurationMs(s.duration_ms)}</td>
+        <td>${s.locked_ms ? formatDurationMs(s.locked_ms) : '—'}</td>
+      </tr>`).join('')}</tbody></table>`;
+    }
+
+    const apps = data.apps || [];
+    if (apps.length === 0) {
+      appsEl.innerHTML = '<p class="emptyHint">Нет данных по приложениям</p>';
+    } else {
+      appsEl.innerHTML = `<table class="activityTable"><thead><tr>
+        <th>Приложение</th><th>Открыто</th><th>В фокусе</th>
+      </tr></thead><tbody>${apps.map(a => `<tr>
+        <td title="${a.exe_path || ''}">${a.app_name || a.exe_path || '—'}</td>
+        <td>${formatDurationMs(a.open_ms)}</td>
+        <td>${formatDurationMs(a.focus_ms)}</td>
+      </tr>`).join('')}</tbody></table>`;
+    }
+
+    const timeline = data.focus_timeline || [];
+    if (timeline.length === 0) {
+      timelineEl.innerHTML = '<p class="emptyHint">Нет таймлайна фокуса</p>';
+    } else {
+      timelineEl.innerHTML = timeline.map(t => `<div class="focusSpan">
+        <span class="focusTime">${formatTime(t.start)}–${formatTime(t.end)}</span>
+        <span class="focusApp">${t.app_name || t.exe_path || '—'}</span>
+      </div>`).join('');
+    }
+  } catch (e) {
+    sessionsEl.innerHTML = '<p class="emptyHint">Не удалось загрузить активность</p>';
+    appsEl.innerHTML = '';
+    timelineEl.innerHTML = '';
+  }
+}
+
 async function selectClient() {
   const sel = document.getElementById('clientSelect');
   currentClientId = sel.value;
@@ -91,8 +193,12 @@ async function selectClient() {
   currentClient = await getClient(currentClientId);
   document.getElementById('clientSection').style.display = 'block';
   document.getElementById('clientIdDisplay').textContent = currentClientId;
+  updateOnlineStatus();
   renderUsers();
   renderConfigPreview();
+  const dateInput = document.getElementById('activityDate');
+  if (!dateInput.value) dateInput.value = todayISODate();
+  renderActivity();
 }
 
 function formatTime(isoStr) {
@@ -380,12 +486,29 @@ document.getElementById('addUser').addEventListener('click', async () => {
 async function loadClients() {
   const clients = await getClients();
   const sel = document.getElementById('clientSelect');
+  const prev = sel.value;
   sel.innerHTML = '<option value="">— Выберите компьютер —</option>' +
-    clients.map(c => `<option value="${c.id}">${c.name || c.id}</option>`).join('');
-  if (clients.length > 0 && !sel.value) {
+    clients.map(c => {
+      const mark = c.online ? ' ●' : '';
+      return `<option value="${c.id}">${c.name || c.id}${mark}</option>`;
+    }).join('');
+  if (prev) {
+    sel.value = prev;
+  } else if (clients.length > 0) {
     sel.value = clients[0].id;
     await selectClient();
   }
 }
 
+document.getElementById('refreshActivity').addEventListener('click', renderActivity);
+document.getElementById('activityDate').addEventListener('change', renderActivity);
+
 loadClients();
+setInterval(() => {
+  if (currentClientId) {
+    getClient(currentClientId).then(c => {
+      currentClient = c;
+      updateOnlineStatus();
+    }).catch(() => {});
+  }
+}, 60000);

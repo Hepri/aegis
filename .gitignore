@@ -5,7 +5,7 @@
 *.so
 *.dylib
 /cmd/aegis-client/aegis-client
-/cmd/aegis-server/aegis-server
+/aegis-server
 
 # Test binary
 *.test
@@ -13,6 +13,9 @@
 # Output
 /bin/
 /dist/
+deploy/updates-staging/
+activity/
+last-seen.json
 
 # IDE
 .idea/
@@ -27,5 +30,3 @@ Thumbs.db
 # Config with secrets (example only)
 *.local.yaml
 *.local.json
-
-aegis-server

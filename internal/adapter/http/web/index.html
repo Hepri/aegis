@@ -26,11 +26,25 @@
         <code id="clientIdDisplay"></code>
         <button id="copyClientId" type="button">Копировать</button>
         <button id="deleteClient" type="button" class="deleteBtn">Удалить компьютер</button>
+        <span id="onlineStatus" class="onlineStatus offline">офлайн</span>
       </div>
       <div id="configPreview" class="configPreview">
         <h3>Интервалы доступа (то, что клиент получает сейчас)</h3>
         <p class="configPreviewHint">Сегодня + завтра, человекопонятный формат</p>
         <div id="configPreviewContent"></div>
+      </div>
+      <div id="activitySection" class="activitySection">
+        <h2>Активность</h2>
+        <div class="activityControls">
+          <label>Дата: <input type="date" id="activityDate"></label>
+          <button id="refreshActivity" type="button">Обновить</button>
+        </div>
+        <h3>Сессии</h3>
+        <div id="activitySessions" class="activityTableWrap"></div>
+        <h3>Приложения</h3>
+        <div id="activityApps" class="activityTableWrap"></div>
+        <h3>Таймлайн фокуса</h3>
+        <div id="activityTimeline" class="focusTimeline"></div>
       </div>
       <h2>Пользователи</h2>
       <ul id="userList"></ul>

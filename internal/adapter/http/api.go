@@ -7,6 +7,7 @@ import (
 
 	"github.com/aegis/parental-control/internal/domain"
 	"github.com/aegis/parental-control/internal/port"
+	"github.com/aegis/parental-control/internal/usecase/server"
 	"github.com/google/uuid"
 )
 
@@ -24,6 +25,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/clients/{id}/temporary-access/{rid}", h.DeleteTemporaryAccess)
 	mux.HandleFunc("POST /api/clients/{id}/block", h.Block)
 	mux.HandleFunc("DELETE /api/clients/{id}/block/{rid}", h.DeleteBlock)
+	mux.HandleFunc("POST /api/clients/{id}/events", h.PostEvents)
+	mux.HandleFunc("GET /api/clients/{id}/activity", h.GetActivity)
+	mux.HandleFunc("GET /api/updates/client", h.GetUpdateManifest)
+	mux.HandleFunc("GET /api/updates/aegis-client.exe", h.DownloadClientBinary)
 }
 
 func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
@@ -33,12 +38,25 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type clientInfo struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID       string     `json:"id"`
+		Name     string     `json:"name"`
+		LastSeen *time.Time `json:"last_seen,omitempty"`
+		Online   bool       `json:"online"`
 	}
 	result := make([]clientInfo, 0, len(clients))
+	var allSeen map[string]time.Time
+	if h.presence != nil {
+		allSeen = h.presence.GetAllLastSeen(r.Context())
+	}
+	now := time.Now()
 	for _, c := range clients {
-		result = append(result, clientInfo{ID: c.ID, Name: c.Name})
+		info := clientInfo{ID: c.ID, Name: c.Name}
+		if t, ok := allSeen[c.ID]; ok {
+			tt := t
+			info.LastSeen = &tt
+			info.Online = now.Sub(t) < 2*time.Minute
+		}
+		result = append(result, info)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -100,11 +118,20 @@ func (h *Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 		Users                   []userResp                    `json:"users"`
 		BlockRequests           []port.BlockRequest           `json:"block_requests"`
 		TemporaryAccessRequests []port.TemporaryAccessRequest `json:"temporary_access_requests"`
+		LastSeen                *time.Time                    `json:"last_seen,omitempty"`
+		Online                  bool                          `json:"online"`
 	}{
 		ID:                      state.ID,
 		Name:                    state.Name,
 		BlockRequests:           state.BlockRequests,
 		TemporaryAccessRequests: state.TemporaryAccessRequests,
+	}
+	if h.presence != nil {
+		if t, ok := h.presence.GetLastSeen(r.Context(), clientID); ok {
+			tt := t
+			resp.LastSeen = &tt
+			resp.Online = time.Now().Sub(t) < 2*time.Minute
+		}
 	}
 	for _, u := range state.Users {
 		resp.Users = append(resp.Users, userResp{
@@ -263,4 +290,113 @@ func (h *Handler) DeleteTemporaryAccess(w http.ResponseWriter, r *http.Request) 
 	}
 	h.repo.IncrementConfigVersion(r.Context(), clientID)
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) PostEvents(w http.ResponseWriter, r *http.Request) {
+	clientID := r.PathValue("id")
+	if h.activity == nil {
+		http.Error(w, "activity store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	state, err := h.repo.GetClient(r.Context(), clientID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if state == nil {
+		http.Error(w, "client not found", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		Events []domain.ActivityEvent `json:"events"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(req.Events) == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	for i := range req.Events {
+		if req.Events[i].ID == "" {
+			req.Events[i].ID = uuid.New().String()
+		}
+		if req.Events[i].Timestamp.IsZero() {
+			req.Events[i].Timestamp = time.Now().In(h.loc)
+		}
+	}
+	if err := h.activity.AppendEvents(r.Context(), clientID, req.Events); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if h.presence != nil {
+		_ = h.presence.TouchLastSeen(r.Context(), clientID)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
+	clientID := r.PathValue("id")
+	if h.activity == nil {
+		http.Error(w, "activity store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	state, err := h.repo.GetClient(r.Context(), clientID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if state == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	dateStr := r.URL.Query().Get("date")
+	var day time.Time
+	if dateStr == "" {
+		day = time.Now().In(h.loc)
+	} else {
+		day, err = time.ParseInLocation("2006-01-02", dateStr, h.loc)
+		if err != nil {
+			http.Error(w, "invalid date, want YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	}
+	events, err := h.activity.ReadDayEvents(r.Context(), clientID, day)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	agg := server.AggregateDayActivity(day, events, time.Now().In(h.loc))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(agg)
+}
+
+func (h *Handler) GetUpdateManifest(w http.ResponseWriter, r *http.Request) {
+	if h.updates == nil {
+		http.Error(w, "updates not configured", http.StatusNotFound)
+		return
+	}
+	u := h.updates.GetClientUpdate()
+	if u == nil {
+		http.Error(w, "no update available", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(u)
+}
+
+func (h *Handler) DownloadClientBinary(w http.ResponseWriter, r *http.Request) {
+	if h.updates == nil {
+		http.Error(w, "updates not configured", http.StatusNotFound)
+		return
+	}
+	path, err := h.updates.BinaryPath()
+	if err != nil {
+		http.Error(w, "binary not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="aegis-client.exe"`)
+	http.ServeFile(w, r, path)
 }

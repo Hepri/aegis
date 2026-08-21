@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aegis/parental-control/internal/adapter/updates"
 	"github.com/aegis/parental-control/internal/domain"
 	"github.com/aegis/parental-control/internal/port"
 	"github.com/aegis/parental-control/internal/usecase/server"
@@ -16,15 +17,36 @@ const (
 )
 
 type Handler struct {
-	repo port.ConfigRepository
-	loc  *time.Location
+	repo     port.ConfigRepository
+	activity port.ActivityStore
+	presence port.PresenceStore
+	updates  *updates.Loader
+	loc      *time.Location
 }
 
-func NewHandler(repo port.ConfigRepository, loc *time.Location) *Handler {
+type HandlerOption func(*Handler)
+
+func WithActivity(store port.ActivityStore) HandlerOption {
+	return func(h *Handler) { h.activity = store }
+}
+
+func WithPresence(store port.PresenceStore) HandlerOption {
+	return func(h *Handler) { h.presence = store }
+}
+
+func WithUpdates(loader *updates.Loader) HandlerOption {
+	return func(h *Handler) { h.updates = loader }
+}
+
+func NewHandler(repo port.ConfigRepository, loc *time.Location, opts ...HandlerOption) *Handler {
 	if loc == nil {
 		loc = time.UTC
 	}
-	return &Handler{repo: repo, loc: loc}
+	h := &Handler{repo: repo, loc: loc}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 func (h *Handler) ServeConfig(w http.ResponseWriter, r *http.Request) {
@@ -48,12 +70,21 @@ func (h *Handler) ServeConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.presence != nil {
+		_ = h.presence.TouchLastSeen(ctx, clientID)
+	}
+
 	// Get precomputed config (always today+tomorrow, full)
 	if state.ComputedConfig == nil {
 		http.Error(w, "config not computed", http.StatusInternalServerError)
 		return
 	}
 	config := *state.ComputedConfig
+	if h.updates != nil {
+		if u := h.updates.GetClientUpdate(); u != nil {
+			config.Update = u
+		}
+	}
 
 	// Compute next change time (when to wake up from long poll)
 	now := time.Now()
@@ -130,6 +161,11 @@ func (h *Handler) sendConfig(w http.ResponseWriter, r *http.Request, config doma
 			intervals[uc.Username] = uc.AllowedIntervals
 		}
 		h.repo.UpdateLastSent(ctx, clientID, intervals)
+	}
+	if h.updates != nil && config.Update == nil {
+		if u := h.updates.GetClientUpdate(); u != nil {
+			config.Update = u
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
