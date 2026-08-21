@@ -28,6 +28,9 @@ const (
 	tokenPrimary          = 1
 	createUnicodeEnv      = 0x00000400
 	createNewProcessGroup = 0x00000200
+	createNoWindow        = 0x08000000
+	startfUseShowWindow   = 0x00000001
+	swHide                = 0
 	stillActive           = 259
 )
 
@@ -185,16 +188,18 @@ func launchSessionAgent(exePath string, sessionID uint32, username string) (uint
 	var si windows.StartupInfo
 	si.Cb = uint32(unsafe.Sizeof(si))
 	si.Desktop, _ = windows.UTF16PtrFromString(`winsta0\default`)
+	si.Flags = startfUseShowWindow
+	si.ShowWindow = swHide
 	var pi windows.ProcessInformation
 
-	// Do NOT use CREATE_NO_WINDOW — agent must run on the interactive desktop
-	// to see GetForegroundWindow / EnumWindows of the user session.
+	// CREATE_NO_WINDOW + SW_HIDE: no console flash. Process still runs in the
+	// user session (via token) on winsta0\default, so EnumWindows works.
 	r1, _, err = procCreateProcessAsUserW.Call(
 		uintptr(primary),
 		uintptr(unsafe.Pointer(appPtr)),
 		uintptr(unsafe.Pointer(cmdPtr)),
 		0, 0, 0,
-		createUnicodeEnv|createNewProcessGroup,
+		createUnicodeEnv|createNewProcessGroup|createNoWindow,
 		0, 0,
 		uintptr(unsafe.Pointer(&si)),
 		uintptr(unsafe.Pointer(&pi)),
@@ -209,6 +214,7 @@ func launchSessionAgent(exePath string, sessionID uint32, username string) (uint
 
 // RunSessionAgent is the entrypoint for the per-user helper process.
 func RunSessionAgent(sessionID uint32, username string) {
+	hideAgentConsole()
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	logPath := filepath.Join(agentStateDir(), fmt.Sprintf("agent-%d.log", sessionID))
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666); err == nil {
@@ -251,4 +257,17 @@ func RunSessionAgent(sessionID uint32, username string) {
 	for range ticker.C {
 		write()
 	}
+}
+
+func hideAgentConsole() {
+	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	getConsoleWindow := kernel32.NewProc("GetConsoleWindow")
+	freeConsole := kernel32.NewProc("FreeConsole")
+	showWindow := user32.NewProc("ShowWindow")
+	hwnd, _, _ := getConsoleWindow.Call()
+	if hwnd != 0 {
+		showWindow.Call(hwnd, swHide)
+	}
+	freeConsole.Call()
 }
