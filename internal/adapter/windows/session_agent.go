@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -23,7 +24,7 @@ var (
 	procDuplicateTokenEx     = advapi32.NewProc("DuplicateTokenEx")
 )
 
-	const (
+const (
 	securityImpersonation = 2
 	tokenPrimary          = 1
 	createUnicodeEnv      = 0x00000400
@@ -64,10 +65,27 @@ func NewSessionAgentManager(exePath string) *SessionAgentManager {
 
 func (m *SessionAgentManager) Start() error {
 	_ = os.MkdirAll(agentStateDir(), 0755)
+	// Previous service runs leave session-agent processes behind; clear them before relaunch.
+	killed := killOtherClientProcesses(m.exePath)
+	if killed > 0 {
+		log.Printf("session-agent: killed %d leftover process(es) on start", killed)
+	}
+	clearAgentStateFiles()
 	return nil
 }
 
 func (m *SessionAgentManager) Stop() {
+	m.mu.Lock()
+	for sid, pid := range m.agents {
+		killProcess(pid)
+		delete(m.agents, sid)
+		_ = os.Remove(agentStatePath(sid))
+	}
+	m.mu.Unlock()
+	killed := killOtherClientProcesses(m.exePath)
+	if killed > 0 {
+		log.Printf("session-agent: killed %d leftover process(es) on stop", killed)
+	}
 	select {
 	case <-m.stopCh:
 	default:
@@ -87,6 +105,9 @@ func (m *SessionAgentManager) SyncAgents(sessions map[uint32]client.SessionSnaps
 		if pid, ok := m.agents[sid]; ok && processAlive(pid) {
 			continue
 		}
+		if old, ok := m.agents[sid]; ok {
+			killProcess(old)
+		}
 		pid, err := launchSessionAgent(m.exePath, sid, snap.Username)
 		if err != nil {
 			log.Printf("session-agent: launch for session %d (%s): %v", sid, snap.Username, err)
@@ -96,12 +117,14 @@ func (m *SessionAgentManager) SyncAgents(sessions map[uint32]client.SessionSnaps
 		log.Printf("session-agent: started pid=%d for session %d (%s)", pid, sid, snap.Username)
 	}
 
-	for sid := range m.agents {
+	for sid, pid := range m.agents {
 		snap, ok := sessions[sid]
-		if !ok || snap.State != client.SessionActive || !processAlive(m.agents[sid]) {
-			delete(m.agents, sid)
-			_ = os.Remove(agentStatePath(sid))
+		if ok && snap.State == client.SessionActive && processAlive(pid) {
+			continue
 		}
+		killProcess(pid)
+		delete(m.agents, sid)
+		_ = os.Remove(agentStatePath(sid))
 	}
 }
 
@@ -152,6 +175,68 @@ func processAlive(pid uint32) bool {
 		return false
 	}
 	return code == stillActive
+}
+
+func killProcess(pid uint32) {
+	if pid == 0 {
+		return
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(h)
+	_ = windows.TerminateProcess(h, 1)
+}
+
+// killOtherClientProcesses terminates every process with the same exe name except the current one.
+// Session-agents share aegis-client.exe; after service restart they would otherwise orphan.
+func killOtherClientProcesses(exePath string) int {
+	selfPID := uint32(os.Getpid())
+	want := strings.ToLower(filepath.Base(exePath))
+	if want == "" {
+		return 0
+	}
+
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		log.Printf("session-agent: process snapshot: %v", err)
+		return 0
+	}
+	defer windows.CloseHandle(snap)
+
+	var pe windows.ProcessEntry32
+	pe.Size = uint32(unsafe.Sizeof(pe))
+	if err := windows.Process32First(snap, &pe); err != nil {
+		return 0
+	}
+	killed := 0
+	for {
+		name := strings.ToLower(windows.UTF16ToString(pe.ExeFile[:]))
+		if name == want && pe.ProcessID != selfPID {
+			log.Printf("session-agent: terminating leftover pid=%d", pe.ProcessID)
+			killProcess(pe.ProcessID)
+			killed++
+		}
+		if err := windows.Process32Next(snap, &pe); err != nil {
+			break
+		}
+	}
+	return killed
+}
+
+func clearAgentStateFiles() {
+	dir := agentStateDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, "session-") && strings.HasSuffix(name, ".json") {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
 }
 
 func launchSessionAgent(exePath string, sessionID uint32, username string) (uint32, error) {
