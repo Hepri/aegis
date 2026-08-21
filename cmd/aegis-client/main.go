@@ -88,7 +88,13 @@ func (p *program) run() {
 	fetcher := httpadapter.NewHTTPConfigFetcher(cfg.ServerURL, cfg.ClientID)
 	fetcher.SetClientVersion(Version)
 	ctrl := windows.NewUserControl()
-	uploader := httpadapter.NewEventUploader(cfg.ServerURL, cfg.ClientID, filepath.Join(exeDir, "events-queue.jsonl"))
+	queueDir := filepath.Join(os.Getenv("ProgramData"), "Aegis")
+	if err := os.MkdirAll(queueDir, 0755); err != nil {
+		queueDir = exeDir
+	}
+	queuePath := filepath.Join(queueDir, "events-queue.jsonl")
+	log.Printf("Event queue: %s", queuePath)
+	uploader := httpadapter.NewEventUploader(cfg.ServerURL, cfg.ClientID, queuePath)
 
 	agentMgr := windows.NewSessionAgentManager(exePath)
 	_ = agentMgr.Start()
@@ -178,6 +184,14 @@ func (p *program) run() {
 				}
 				if err := uploader.Enqueue(ev); err != nil {
 					log.Printf("enqueue session events: %v", err)
+				} else {
+					ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+					if err := uploader.Flush(ctx); err != nil {
+						log.Printf("upload events (immediate): %v", err)
+					} else {
+						log.Printf("activity: uploaded session events OK")
+					}
+					cancel()
 				}
 			} else if len(prevSessions) == 0 {
 				windows.LogSessions(sessions)
@@ -185,15 +199,6 @@ func (p *program) run() {
 			agentMgr.SyncAgents(sessions)
 
 			appStates := agentMgr.LatestStates()
-			if len(appStates) == 0 && len(sessions) > 0 {
-				// Helpful once: agents not reporting yet
-				for sid, s := range sessions {
-					if s.State == client.SessionActive {
-						log.Printf("activity: no app snapshot yet for session %d (%s)", sid, s.Username)
-						break
-					}
-				}
-			}
 			for sid, state := range appStates {
 				prev := prevApps[sid]
 				osMap := openSince[sid]
@@ -205,6 +210,12 @@ func (p *program) run() {
 					log.Printf("activity: %d app event(s) for session %d", len(appEv), sid)
 					if err := uploader.Enqueue(appEv); err != nil {
 						log.Printf("enqueue app events: %v", err)
+					} else {
+						ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+						if err := uploader.Flush(ctx); err != nil {
+							log.Printf("upload app events: %v", err)
+						}
+						cancel()
 					}
 				}
 				cp := state

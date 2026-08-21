@@ -15,12 +15,13 @@ import (
 const (
 	wtsActive       = 0
 	wtsConnected    = 1
+	wtsConnectQuery = 2
+	wtsShadow       = 3
 	wtsDisconnected = 4
+	wtsIdle         = 5
 )
 
 // ListSessions returns interactive sessions keyed by session ID.
-// Connect state and logon time come from WTSQuerySessionInformation (not the
-// enumerate struct layout), so login timestamps match the real Windows logon.
 func ListSessions() (map[uint32]client.SessionSnapshot, error) {
 	ids, err := enumerateSessions()
 	if err != nil {
@@ -40,19 +41,24 @@ func ListSessions() (map[uint32]client.SessionSnapshot, error) {
 		if idx := strings.Index(uname, "\\"); idx >= 0 {
 			namePart = uname[idx+1:]
 		}
-		rawState, err := getSessionConnectState(sid)
-		if err != nil {
+		// Skip clearly non-user accounts
+		if strings.EqualFold(namePart, "SYSTEM") || strings.EqualFold(namePart, "LOCAL SERVICE") || strings.EqualFold(namePart, "NETWORK SERVICE") {
 			continue
 		}
-		state := client.SessionOther
-		switch rawState {
-		case wtsActive, wtsConnected:
-			state = client.SessionActive
-		case wtsDisconnected:
-			state = client.SessionDisconnected
-		default:
-			continue
+
+		state := client.SessionActive // default: if we have a username, treat as present
+		if rawState, err := getSessionConnectState(sid); err == nil {
+			switch rawState {
+			case wtsActive, wtsConnected, wtsConnectQuery, wtsShadow:
+				state = client.SessionActive
+			case wtsDisconnected, wtsIdle:
+				state = client.SessionDisconnected
+			default:
+				// Keep Active default for unknown states with a real username
+				state = client.SessionActive
+			}
 		}
+
 		out[sid] = client.SessionSnapshot{
 			SessionID: sid,
 			Username:  namePart,
@@ -84,35 +90,9 @@ func getSessionConnectState(sessionID uint32) (uint32, error) {
 }
 
 func getSessionLogonTime(sessionID uint32) time.Time {
-	// Prefer WTSINFO.LogonTime (WTSSessionInfo = 24)
 	var infoPtr uintptr
 	var bytes uint32
 	r1, _, _ := procWTSQuerySessionInformationW.Call(
-		WTS_CURRENT_SERVER_HANDLE,
-		uintptr(sessionID),
-		WTSSessionInfo,
-		uintptr(unsafe.Pointer(&infoPtr)),
-		uintptr(unsafe.Pointer(&bytes)),
-	)
-	if r1 != 0 && infoPtr != 0 && bytes >= 72 {
-		// WTSINFO layout (x64): State(4)+pad(4)+SessionId(4)+IncomingBytes(4)+
-		// OutgoingBytes(4)+IncomingFrames(4)+OutgoingFrames(4)+IncomingCompressed(4)+
-		// OutgoingCompressed(4) = 36, then pad to 40 for LARGE_INTEGER alignment,
-		// then IdleTime(8)+LastInput(8? no IdleTime is LARGE_INTEGER at offset...)
-		// Actual WTSINFO (Windows SDK):
-		//   State DWORD + SessionId DWORD + IncomingBytes DWORD + OutgoingBytes DWORD
-		//   IncomingFrames DWORD + OutgoingFrames DWORD + IncomingCompressedBytes DWORD
-		//   OutgoingCompressedBytes DWORD = 32 bytes
-		//   WinStationName WCHAR[32] = 64 -> total 96
-		//   Domain WCHAR[17] ... this gets messy across SDK versions.
-		//
-		// Safer: use WTSLogonTime (18) which returns a pointer to a 64-bit FILETIME/LARGE_INTEGER.
-		procWTSFreeMemory.Call(infoPtr)
-	} else if infoPtr != 0 {
-		procWTSFreeMemory.Call(infoPtr)
-	}
-
-	r1, _, _ = procWTSQuerySessionInformationW.Call(
 		WTS_CURRENT_SERVER_HANDLE,
 		uintptr(sessionID),
 		WTSLogonTime,
@@ -134,7 +114,6 @@ func filetimeToTime(ft int64) time.Time {
 	if ft <= 0 {
 		return time.Time{}
 	}
-	// FILETIME: 100ns since 1601-01-01 UTC. Unix epoch offset:
 	const epochDiff = int64(116444736000000000)
 	nsec := (ft - epochDiff) * 100
 	if nsec <= 0 {
