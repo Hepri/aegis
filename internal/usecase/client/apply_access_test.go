@@ -49,6 +49,20 @@ func TestApplyAccess_FirstPollBlocksOutsideInterval(t *testing.T) {
 	}
 }
 
+func TestLockUsers_BlocksAll(t *testing.T) {
+	ctrl := &fakeCtrl{}
+	state := LockUsers(ctrl, []string{"kid", "admin"})
+	if state["kid"] != false || state["admin"] != false {
+		t.Fatalf("expected all blocked, got %v", state)
+	}
+	if ctrl.passwords["kid"] == "" || ctrl.passwords["kid"] == unlockPassword {
+		t.Fatalf("expected random lock password for kid, got %q", ctrl.passwords["kid"])
+	}
+	if len(ctrl.logoffs) != 2 {
+		t.Fatalf("expected 2 logoffs, got %v", ctrl.logoffs)
+	}
+}
+
 func TestApplyAccess_SkipsWhenUnchanged(t *testing.T) {
 	ctrl := &fakeCtrl{}
 	now := time.Date(2026, 8, 21, 23, 0, 0, 0, time.UTC)

@@ -14,6 +14,29 @@ const (
 	lockPasswordLen = 20
 )
 
+// LockUsers forces a random password and session disconnect for every username.
+// Used on service start so reboot without network stays fail-closed (no login).
+// Returns state with all users marked blocked (false).
+func LockUsers(ctrl port.UserControl, usernames []string) map[string]bool {
+	state := make(map[string]bool, len(usernames))
+	for _, username := range usernames {
+		if username == "" {
+			continue
+		}
+		state[username] = false
+		randomPass := generateRandomPassword(lockPasswordLen)
+		if err := ctrl.SetPassword(username, randomPass); err != nil {
+			log.Printf("  %s: FAILED to lock on boot: %v", username, err)
+			continue
+		}
+		log.Printf("  %s: LOCKED on boot (fail-closed until server config)", username)
+		if err := ctrl.DisconnectUserSession(username); err != nil {
+			log.Printf("  %s: session disconnect failed: %v", username, err)
+		}
+	}
+	return state
+}
+
 // ApplyAccessIfNeeded applies config only when required state differs from lastState.
 // lastState: username -> true=allowed, false=blocked. Pass nil on first call.
 // Returns the new state after applying.

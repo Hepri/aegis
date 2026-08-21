@@ -126,6 +126,39 @@ function updateOnlineStatus() {
   }
 }
 
+function renderSessionCard(s, { open = false } = {}) {
+  const apps = s.apps || [];
+  const active = !s.logout;
+  const appsHtml = apps.length === 0
+    ? '<p class="emptyHint">Нет приложений в этой сессии</p>'
+    : `<table class="activityTable"><thead><tr>
+        <th>Приложение</th><th>Открыто</th><th>В фокусе</th>
+      </tr></thead><tbody>${apps.map(a => `<tr>
+        <td title="${escapeAttr(a.exe_path || '')}">${escapeHtml(a.app_name || a.exe_path || '—')}</td>
+        <td>${formatDurationMs(a.open_ms)}</td>
+        <td>${formatDurationMs(a.focus_ms)}</td>
+      </tr>`).join('')}</tbody></table>`;
+  const lockedLine = s.locked_ms
+    ? `<div class="sessionStat">Экран блокировки: <strong>${formatDurationMs(s.locked_ms)}</strong></div>`
+    : '';
+  return `<details class="sessionCard${active ? ' sessionCardActive' : ''}" ${open || active ? 'open' : ''}>
+    <summary class="sessionSummary">
+      <div class="sessionTitleRow">
+        <span class="sessionUser">${escapeHtml(s.username || '—')}</span>
+        ${active ? '<span class="sessionBadge">сейчас</span>' : ''}
+      </div>
+      <div class="sessionTimes">
+        <div class="sessionStat">Старт: <strong>${formatDateTime(s.login)}</strong></div>
+        <div class="sessionStat">Конец: <strong>${active ? 'ещё открыта' : formatDateTime(s.logout)}</strong></div>
+        <div class="sessionStat">Длительность: <strong>${formatDurationMs(s.duration_ms)}</strong></div>
+        ${lockedLine}
+        <div class="sessionStat muted">${apps.length} прил.</div>
+      </div>
+    </summary>
+    <div class="sessionBody">${appsHtml}</div>
+  </details>`;
+}
+
 async function renderActivity() {
   const sessionsEl = document.getElementById('activitySessions');
   if (!currentClientId) {
@@ -141,27 +174,18 @@ async function renderActivity() {
       sessionsEl.innerHTML = '<p class="emptyHint">Нет сессий за этот день</p>';
       return;
     }
-    sessionsEl.innerHTML = sessions.map((s, idx) => {
-      const apps = s.apps || [];
-      const appsHtml = apps.length === 0
-        ? '<p class="emptyHint">Нет приложений в этой сессии</p>'
-        : `<table class="activityTable"><thead><tr>
-            <th>Приложение</th><th>Открыто</th><th>В фокусе</th>
-          </tr></thead><tbody>${apps.map(a => `<tr>
-            <td title="${escapeAttr(a.exe_path || '')}">${escapeHtml(a.app_name || a.exe_path || '—')}</td>
-            <td>${formatDurationMs(a.open_ms)}</td>
-            <td>${formatDurationMs(a.focus_ms)}</td>
-          </tr>`).join('')}</tbody></table>`;
-      return `<details class="sessionCard" ${idx === sessions.length - 1 ? 'open' : ''}>
-        <summary class="sessionSummary">
-          <span class="sessionUser">${escapeHtml(s.username || '—')}</span>
-          <span class="sessionMeta">${formatDateTime(s.login)} → ${s.logout ? formatDateTime(s.logout) : 'ещё открыта'}</span>
-          <span class="sessionDur">${formatDurationMs(s.duration_ms)}${s.locked_ms ? ` · lock ${formatDurationMs(s.locked_ms)}` : ''}</span>
-          <span class="sessionAppsCount">${apps.length} прил.</span>
-        </summary>
-        <div class="sessionBody">${appsHtml}</div>
-      </details>`;
-    }).join('');
+    const active = sessions.filter(s => !s.logout);
+    const done = sessions.filter(s => !!s.logout);
+    let html = '';
+    if (active.length) {
+      html += `<h4 class="sessionGroupTitle">Активные</h4>
+        <div class="sessionGroup">${active.map(s => renderSessionCard(s, { open: true })).join('')}</div>`;
+    }
+    if (done.length) {
+      html += `<h4 class="sessionGroupTitle">Завершённые</h4>
+        <div class="sessionGroup">${done.map((s, i) => renderSessionCard(s, { open: i === done.length - 1 && !active.length })).join('')}</div>`;
+    }
+    sessionsEl.innerHTML = html;
   } catch (e) {
     sessionsEl.innerHTML = '<p class="emptyHint">Не удалось загрузить активность</p>';
   }

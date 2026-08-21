@@ -109,6 +109,27 @@ func (p *program) run() {
 	focusSince := map[uint32]*time.Time{}
 	focusKey := map[uint32]string{}
 
+	persistManaged := func(cfg *domain.ClientConfig) {
+		names := client.UsernamesFromConfig(cfg)
+		if len(names) == 0 {
+			return
+		}
+		if err := client.SaveManagedUsers(queueDir, names); err != nil {
+			log.Printf("save managed users: %v", err)
+		}
+	}
+
+	// Fail-closed on boot: lock known accounts before waiting for the network,
+	// so reboot without internet cannot leave the unlock password in place.
+	if names, err := client.LoadManagedUsers(queueDir); err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("load managed users: %v", err)
+		}
+	} else if len(names) > 0 {
+		log.Printf("Boot lock (fail-closed): locking %d managed user(s)", len(names))
+		lastState = client.LockUsers(ctrl, names)
+	}
+
 	go func() {
 		for {
 			select {
@@ -131,6 +152,7 @@ func (p *program) run() {
 				log.Printf("Config updated: version %s -> %s", lastVersion, fetched.Version)
 				currentConfig = fetched
 				lastVersion = fetched.Version
+				persistManaged(fetched)
 			}
 			if fetched.Update != nil {
 				windows.ApplyUpdateIfNeeded(Version, fetched.Update, cfg.ServerURL)
@@ -142,12 +164,13 @@ func (p *program) run() {
 	ctx := context.Background()
 	fetched, err := fetcher.FetchConfig(ctx, "")
 	if err != nil {
-		log.Printf("Failed to fetch initial config: %v", err)
+		log.Printf("Failed to fetch initial config: %v (accounts stay locked until server is reachable)", err)
 	} else if fetched != nil {
 		log.Printf("Initial config received, version: %s, users: %d", fetched.Version, len(fetched.Users))
 		currentConfig = fetched
 		lastVersion = fetched.Version
-		lastState = client.ApplyAccessIfNeeded(ctrl, fetched, time.Now(), nil)
+		persistManaged(fetched)
+		lastState = client.ApplyAccessIfNeeded(ctrl, fetched, time.Now(), lastState)
 		if fetched.Update != nil {
 			windows.ApplyUpdateIfNeeded(Version, fetched.Update, cfg.ServerURL)
 		}
