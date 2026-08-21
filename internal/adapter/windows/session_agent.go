@@ -23,12 +23,13 @@ var (
 	procDuplicateTokenEx     = advapi32.NewProc("DuplicateTokenEx")
 )
 
-const (
+	const (
 	securityImpersonation = 2
 	tokenPrimary          = 1
 	createUnicodeEnv      = 0x00000400
 	createNewProcessGroup = 0x00000200
 	createNoWindow        = 0x08000000
+	detachedProcess       = 0x00000008
 	startfUseShowWindow   = 0x00000001
 	swHide                = 0
 	stillActive           = 259
@@ -192,14 +193,13 @@ func launchSessionAgent(exePath string, sessionID uint32, username string) (uint
 	si.ShowWindow = swHide
 	var pi windows.ProcessInformation
 
-	// CREATE_NO_WINDOW + SW_HIDE: no console flash. Process still runs in the
-	// user session (via token) on winsta0\default, so EnumWindows works.
+	// Hidden helper in the user session — no console window the child can close.
 	r1, _, err = procCreateProcessAsUserW.Call(
 		uintptr(primary),
 		uintptr(unsafe.Pointer(appPtr)),
 		uintptr(unsafe.Pointer(cmdPtr)),
 		0, 0, 0,
-		createUnicodeEnv|createNewProcessGroup|createNoWindow,
+		createUnicodeEnv|createNewProcessGroup|createNoWindow|detachedProcess,
 		0, 0,
 		uintptr(unsafe.Pointer(&si)),
 		uintptr(unsafe.Pointer(&pi)),
@@ -257,6 +257,10 @@ func RunSessionAgent(sessionID uint32, username string) {
 	for range ticker.C {
 		write()
 	}
+}
+
+func HideAgentConsole() {
+	hideAgentConsole()
 }
 
 func hideAgentConsole() {

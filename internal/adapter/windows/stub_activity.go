@@ -26,4 +26,6 @@ func (m *SessionAgentManager) LatestStates() map[uint32]client.AppWatchState {
 
 func RunSessionAgent(sessionID uint32, username string) {}
 
+func HideAgentConsole() {}
+
 func ApplyUpdateIfNeeded(localVersion string, update *domain.ClientUpdate, serverURL string) {}

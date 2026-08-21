@@ -76,7 +76,10 @@ func ApplyUpdateIfNeeded(localVersion string, update *domain.ClientUpdate, serve
 	log.Printf("OTA: binary replaced, restarting service")
 
 	cmd := exec.Command("cmd", "/C", "net stop AegisClient & net start AegisClient")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
 	if err := cmd.Start(); err != nil {
 		log.Printf("OTA: restart command: %v", err)
 		return

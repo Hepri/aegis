@@ -64,7 +64,10 @@ func NewUserControl() *UserControl {
 
 func (u *UserControl) SetPassword(username, password string) error {
 	cmd := exec.Command("net", "user", username, password)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
 	err := cmd.Run()
 	if err != nil {
 		log.Printf("SetPassword %q failed: %v (try running as admin, local account only)", username, err)

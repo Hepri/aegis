@@ -48,7 +48,8 @@ func ApplyAccessIfNeeded(ctrl port.UserControl, config *domain.ClientConfig, now
 			}
 		}
 
-		if required == current {
+		_, known := lastState[uc.Username]
+		if known && required == current {
 			// State unchanged, skip apply
 			continue
 		}

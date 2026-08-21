@@ -245,6 +245,7 @@ func (p *program) run() {
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "session-agent" {
+		windows.HideAgentConsole()
 		fs := flag.NewFlagSet("session-agent", flag.ExitOnError)
 		sid := fs.Uint("session-id", 0, "WTS session id")
 		user := fs.String("username", "", "Windows username")
