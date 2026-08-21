@@ -128,12 +128,8 @@ function updateOnlineStatus() {
 
 async function renderActivity() {
   const sessionsEl = document.getElementById('activitySessions');
-  const appsEl = document.getElementById('activityApps');
-  const timelineEl = document.getElementById('activityTimeline');
   if (!currentClientId) {
     sessionsEl.innerHTML = '';
-    appsEl.innerHTML = '';
-    timelineEl.innerHTML = '';
     return;
   }
   const dateInput = document.getElementById('activityDate');
@@ -143,46 +139,38 @@ async function renderActivity() {
     const sessions = data.sessions || [];
     if (sessions.length === 0) {
       sessionsEl.innerHTML = '<p class="emptyHint">Нет сессий за этот день</p>';
-    } else {
-      sessionsEl.innerHTML = `<table class="activityTable"><thead><tr>
-        <th>Пользователь</th><th>Вход</th><th>Выход</th><th>Длительность</th><th>Блокировка экрана</th>
-      </tr></thead><tbody>${sessions.map(s => `<tr>
-        <td>${s.username || '—'}</td>
-        <td>${formatDateTime(s.login)}</td>
-        <td>${s.logout ? formatDateTime(s.logout) : 'ещё открыта'}</td>
-        <td>${formatDurationMs(s.duration_ms)}</td>
-        <td>${s.locked_ms ? formatDurationMs(s.locked_ms) : '—'}</td>
-      </tr>`).join('')}</tbody></table>`;
+      return;
     }
-
-    const apps = data.apps || [];
-    if (apps.length === 0) {
-      appsEl.innerHTML = '<p class="emptyHint">Нет данных по приложениям</p>';
-    } else {
-      appsEl.innerHTML = `<table class="activityTable"><thead><tr>
-        <th>Приложение</th><th>Открыто</th><th>В фокусе</th>
-      </tr></thead><tbody>${apps.map(a => `<tr>
-        <td title="${a.exe_path || ''}">${a.app_name || a.exe_path || '—'}</td>
-        <td>${formatDurationMs(a.open_ms)}</td>
-        <td>${formatDurationMs(a.focus_ms)}</td>
-      </tr>`).join('')}</tbody></table>`;
-    }
-
-    const timeline = data.focus_timeline || [];
-    if (timeline.length === 0) {
-      timelineEl.innerHTML = '<p class="emptyHint">Нет таймлайна фокуса</p>';
-    } else {
-      timelineEl.innerHTML = timeline.map(t => `<div class="focusSpan">
-        <span class="focusTime">${formatTime(t.start)}–${formatTime(t.end)}</span>
-        <span class="focusApp">${t.app_name || t.exe_path || '—'}</span>
-      </div>`).join('');
-    }
+    sessionsEl.innerHTML = sessions.map((s, idx) => {
+      const apps = s.apps || [];
+      const appsHtml = apps.length === 0
+        ? '<p class="emptyHint">Нет приложений в этой сессии</p>'
+        : `<table class="activityTable"><thead><tr>
+            <th>Приложение</th><th>Открыто</th><th>В фокусе</th>
+          </tr></thead><tbody>${apps.map(a => `<tr>
+            <td title="${escapeAttr(a.exe_path || '')}">${escapeHtml(a.app_name || a.exe_path || '—')}</td>
+            <td>${formatDurationMs(a.open_ms)}</td>
+            <td>${formatDurationMs(a.focus_ms)}</td>
+          </tr>`).join('')}</tbody></table>`;
+      return `<details class="sessionCard" ${idx === sessions.length - 1 ? 'open' : ''}>
+        <summary class="sessionSummary">
+          <span class="sessionUser">${escapeHtml(s.username || '—')}</span>
+          <span class="sessionMeta">${formatDateTime(s.login)} → ${s.logout ? formatDateTime(s.logout) : 'ещё открыта'}</span>
+          <span class="sessionDur">${formatDurationMs(s.duration_ms)}${s.locked_ms ? ` · lock ${formatDurationMs(s.locked_ms)}` : ''}</span>
+          <span class="sessionAppsCount">${apps.length} прил.</span>
+        </summary>
+        <div class="sessionBody">${appsHtml}</div>
+      </details>`;
+    }).join('');
   } catch (e) {
     sessionsEl.innerHTML = '<p class="emptyHint">Не удалось загрузить активность</p>';
-    appsEl.innerHTML = '';
-    timelineEl.innerHTML = '';
   }
 }
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escapeAttr(s) { return escapeHtml(s); }
 
 async function selectClient() {
   const sel = document.getElementById('clientSelect');

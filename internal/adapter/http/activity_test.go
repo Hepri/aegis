@@ -61,7 +61,7 @@ func TestPostEventsAndGetActivity(t *testing.T) {
 	if len(agg.Sessions) != 1 {
 		t.Fatalf("sessions=%d", len(agg.Sessions))
 	}
-	if len(agg.Apps) != 1 || agg.Apps[0].AppName != "Notepad" {
-		t.Fatalf("apps=%+v", agg.Apps)
+	if len(agg.Sessions[0].Apps) != 1 || agg.Sessions[0].Apps[0].AppName != "Notepad" {
+		t.Fatalf("apps=%+v", agg.Sessions[0].Apps)
 	}
 }

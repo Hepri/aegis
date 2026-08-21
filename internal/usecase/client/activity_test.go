@@ -71,7 +71,7 @@ func TestDiffApps_OpenFocusClose(t *testing.T) {
 		Apps:     []AppSnapshot{{AppName: "Chrome", ExePath: `C:\chrome.exe`}},
 		Focused:  &AppSnapshot{AppName: "Chrome", ExePath: `C:\chrome.exe`},
 	}
-	ev, openSince, focusSince, focusKey := DiffApps(nil, curr, now, openSince, focusSince, focusKey)
+	ev, openSince, focusSince, focusKey := DiffApps(nil, curr, now, openSince, focusSince, focusKey, 1)
 	types := map[string]int{}
 	for _, e := range ev {
 		types[e.Type]++
@@ -82,7 +82,7 @@ func TestDiffApps_OpenFocusClose(t *testing.T) {
 
 	later := now.Add(5 * time.Minute)
 	next := &AppWatchState{Username: "kid", Apps: nil, Focused: nil}
-	ev, _, _, _ = DiffApps(curr, next, later, openSince, focusSince, focusKey)
+	ev, _, _, _ = DiffApps(curr, next, later, openSince, focusSince, focusKey, 1)
 	types = map[string]int{}
 	for _, e := range ev {
 		types[e.Type]++

@@ -35,33 +35,25 @@ type ClientUpdate struct {
 
 // DayActivity is the aggregated activity view for one calendar day.
 type DayActivity struct {
-	Date       string           `json:"date"`
-	Sessions   []SessionSummary `json:"sessions"`
-	Apps       []AppSummary     `json:"apps"`
-	FocusTimeline []FocusSpan   `json:"focus_timeline"`
+	Date     string           `json:"date"`
+	Sessions []SessionSummary `json:"sessions"`
 }
 
-// SessionSummary is one login–logout (or still-open) session window.
+// SessionSummary is one login–logout (or still-open) session with nested app usage.
 type SessionSummary struct {
-	Username  string     `json:"username"`
-	Login     time.Time  `json:"login"`
-	Logout    *time.Time `json:"logout,omitempty"`
-	DurationMs int64     `json:"duration_ms"`
-	LockedMs  int64      `json:"locked_ms,omitempty"`
+	SessionID  uint32       `json:"session_id,omitempty"`
+	Username   string       `json:"username"`
+	Login      time.Time    `json:"login"`
+	Logout     *time.Time   `json:"logout,omitempty"`
+	DurationMs int64        `json:"duration_ms"`
+	LockedMs   int64        `json:"locked_ms,omitempty"`
+	Apps       []AppSummary `json:"apps,omitempty"`
 }
 
-// AppSummary aggregates open and focus time for one app on a day.
+// AppSummary aggregates open and focus time for one app.
 type AppSummary struct {
-	AppName    string `json:"app_name"`
-	ExePath    string `json:"exe_path,omitempty"`
-	OpenMs     int64  `json:"open_ms"`
-	FocusMs    int64  `json:"focus_ms"`
-}
-
-// FocusSpan is a continuous foreground period for an app.
-type FocusSpan struct {
-	AppName string    `json:"app_name"`
-	ExePath string    `json:"exe_path,omitempty"`
-	Start   time.Time `json:"start"`
-	End     time.Time `json:"end"`
+	AppName string `json:"app_name"`
+	ExePath string `json:"exe_path,omitempty"`
+	OpenMs  int64  `json:"open_ms"`
+	FocusMs int64  `json:"focus_ms"`
 }

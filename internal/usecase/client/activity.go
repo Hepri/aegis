@@ -112,7 +112,8 @@ func appKey(a AppSnapshot) string {
 }
 
 // DiffApps compares previous and current app watch state.
-func DiffApps(prev, curr *AppWatchState, now time.Time, openSince map[string]time.Time, focusSince *time.Time, focusKey string) (
+// sessionID is attached to emitted events for per-session aggregation.
+func DiffApps(prev, curr *AppWatchState, now time.Time, openSince map[string]time.Time, focusSince *time.Time, focusKey string, sessionID uint32) (
 	events []domain.ActivityEvent,
 	newOpenSince map[string]time.Time,
 	newFocusSince *time.Time,
@@ -146,6 +147,7 @@ func DiffApps(prev, curr *AppWatchState, now time.Time, openSince map[string]tim
 				Type:      domain.EventAppOpen,
 				Timestamp: now,
 				Username:  username,
+				SessionID: sessionID,
 				AppName:   a.AppName,
 				ExePath:   a.ExePath,
 			})
@@ -167,6 +169,7 @@ func DiffApps(prev, curr *AppWatchState, now time.Time, openSince map[string]tim
 				Type:       domain.EventAppClose,
 				Timestamp:  now,
 				Username:   username,
+				SessionID:  sessionID,
 				AppName:    a.AppName,
 				ExePath:    a.ExePath,
 				DurationMs: dur,
@@ -196,6 +199,7 @@ func DiffApps(prev, curr *AppWatchState, now time.Time, openSince map[string]tim
 				Type:       domain.EventAppBlur,
 				Timestamp:  now,
 				Username:   username,
+				SessionID:  sessionID,
 				AppName:    prevApp.AppName,
 				ExePath:    prevApp.ExePath,
 				DurationMs: dur,
@@ -207,6 +211,7 @@ func DiffApps(prev, curr *AppWatchState, now time.Time, openSince map[string]tim
 				Type:      domain.EventAppFocus,
 				Timestamp: now,
 				Username:  username,
+				SessionID: sessionID,
 				AppName:   currFocus.AppName,
 				ExePath:   currFocus.ExePath,
 			})

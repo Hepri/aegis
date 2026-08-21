@@ -205,7 +205,7 @@ func (p *program) run() {
 				if osMap == nil {
 					osMap = map[string]time.Time{}
 				}
-				appEv, newOpen, newFS, newFK := client.DiffApps(prev, &state, now, osMap, focusSince[sid], focusKey[sid])
+				appEv, newOpen, newFS, newFK := client.DiffApps(prev, &state, now, osMap, focusSince[sid], focusKey[sid], sid)
 				if len(appEv) > 0 {
 					log.Printf("activity: %d app event(s) for session %d", len(appEv), sid)
 					if err := uploader.Enqueue(appEv); err != nil {
