@@ -1,6 +1,7 @@
 package client
 
 import (
+	"strings"
 	"time"
 
 	"github.com/aegis/parental-control/internal/domain"
@@ -45,6 +46,41 @@ func DiffSessions(prev, curr map[uint32]SessionSnapshot, now time.Time) []domain
 	for id, c := range curr {
 		p, ok := prev[id]
 		if !ok {
+			if c.State == SessionActive || c.State == SessionDisconnected {
+				ts := now
+				if !c.LogonTime.IsZero() {
+					ts = c.LogonTime
+				}
+				events = append(events, domain.ActivityEvent{
+					ID:        uuid.New().String(),
+					Type:      domain.EventSessionLogin,
+					Timestamp: ts,
+					Username:  c.Username,
+					SessionID: id,
+				})
+				if c.State == SessionDisconnected {
+					events = append(events, domain.ActivityEvent{
+						ID:        uuid.New().String(),
+						Type:      domain.EventSessionLock,
+						Timestamp: now,
+						Username:  c.Username,
+						SessionID: id,
+					})
+				}
+			}
+			continue
+		}
+		// Same WTS id, different user (fast-user switch / session reuse)
+		if !strings.EqualFold(p.Username, c.Username) {
+			if p.State == SessionActive || p.State == SessionDisconnected {
+				events = append(events, domain.ActivityEvent{
+					ID:        uuid.New().String(),
+					Type:      domain.EventSessionLogout,
+					Timestamp: now,
+					Username:  p.Username,
+					SessionID: id,
+				})
+			}
 			if c.State == SessionActive || c.State == SessionDisconnected {
 				ts := now
 				if !c.LogonTime.IsZero() {

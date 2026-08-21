@@ -66,6 +66,7 @@ func (s *sessAcc) toSummary(now time.Time) domain.SessionSummary {
 	if s.logout != nil {
 		end = *s.logout
 	}
+	lockedNow := s.logout == nil && s.lockedAt != nil
 	if s.lockedAt != nil {
 		s.lockedMs += end.Sub(*s.lockedAt).Milliseconds()
 		s.lockedAt = nil
@@ -94,6 +95,7 @@ func (s *sessAcc) toSummary(now time.Time) domain.SessionSummary {
 		Logout:     s.logout,
 		DurationMs: end.Sub(s.login).Milliseconds(),
 		LockedMs:   s.lockedMs,
+		LockedNow:  lockedNow,
 		Apps:       apps,
 	}
 }
@@ -127,7 +129,6 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 
 	openByID := map[uint32]*sessAcc{}
 	var closed []*sessAcc
-	var orphan *sessAcc // app events before any matching session
 
 	findByTime := func(username string, ts time.Time) *sessAcc {
 		for _, s := range openByID {
@@ -157,27 +158,50 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 	resolve := func(ev domain.ActivityEvent) *sessAcc {
 		if ev.SessionID != 0 {
 			if s := openByID[ev.SessionID]; s != nil {
-				return s
+				if ev.Username == "" || strings.EqualFold(s.username, ev.Username) {
+					return s
+				}
 			}
 			for _, s := range closed {
-				if s.sessionID == ev.SessionID {
+				if s.sessionID != ev.SessionID {
+					continue
+				}
+				if ev.Username == "" || strings.EqualFold(s.username, ev.Username) {
 					return s
 				}
 			}
 		}
-		if s := findByTime(ev.Username, ev.Timestamp); s != nil {
-			return s
+		return findByTime(ev.Username, ev.Timestamp)
+	}
+
+	closeOpen := func(s *sessAcc, at time.Time) {
+		logout := at
+		if logout.Before(s.login) {
+			logout = s.login
 		}
-		if orphan == nil {
-			orphan = newSessAcc(0, ev.Username, ev.Timestamp)
-		}
-		return orphan
+		s.logout = &logout
+		closed = append(closed, s)
 	}
 
 	for _, ev := range sorted {
 		ts := ev.Timestamp
 		switch ev.Type {
 		case domain.EventSessionLogin:
+			if prev := openByID[ev.SessionID]; prev != nil {
+				if strings.EqualFold(prev.username, ev.Username) {
+					// Duplicate login (e.g. client restart) — keep the open session.
+					continue
+				}
+				closeOpen(prev, ts)
+				delete(openByID, ev.SessionID)
+			}
+			// Close earlier open sessions for the same user (ghost / switch).
+			for id, s := range openByID {
+				if ev.Username != "" && strings.EqualFold(s.username, ev.Username) {
+					closeOpen(s, ts)
+					delete(openByID, id)
+				}
+			}
 			openByID[ev.SessionID] = newSessAcc(ev.SessionID, ev.Username, ts)
 
 		case domain.EventSessionLock:
@@ -206,11 +230,17 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 
 		case domain.EventAppOpen:
 			s := resolve(ev)
+			if s == nil {
+				continue
+			}
 			k := appKey(ev.AppName, ev.ExePath)
 			s.appsOpen[k] = &openApp{name: ev.AppName, exe: ev.ExePath, opened: ts}
 			s.ensureApp(ev.AppName, ev.ExePath)
 		case domain.EventAppClose:
 			s := resolve(ev)
+			if s == nil {
+				continue
+			}
 			k := appKey(ev.AppName, ev.ExePath)
 			a := s.ensureApp(ev.AppName, ev.ExePath)
 			if o, ok := s.appsOpen[k]; ok {
@@ -228,6 +258,9 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 			}
 		case domain.EventAppFocus:
 			s := resolve(ev)
+			if s == nil {
+				continue
+			}
 			s.closeFocus(ts)
 			t := ts
 			s.focusStart = &t
@@ -236,7 +269,7 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 			s.ensureApp(ev.AppName, ev.ExePath)
 		case domain.EventAppBlur:
 			s := resolve(ev)
-			if s.focusStart == nil {
+			if s == nil || s.focusStart == nil {
 				continue
 			}
 			if ev.DurationMs > 0 {
@@ -254,12 +287,6 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 	}
 	for _, s := range openByID {
 		sessions = append(sessions, s.toSummary(now))
-	}
-	if orphan != nil && len(orphan.appTotals) > 0 {
-		if orphan.username == "" {
-			orphan.username = "—"
-		}
-		sessions = append(sessions, orphan.toSummary(now))
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {

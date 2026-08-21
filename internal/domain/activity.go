@@ -47,6 +47,7 @@ type SessionSummary struct {
 	Logout     *time.Time   `json:"logout,omitempty"`
 	DurationMs int64        `json:"duration_ms"`
 	LockedMs   int64        `json:"locked_ms,omitempty"`
+	LockedNow  bool         `json:"locked_now,omitempty"` // still open, currently on lock screen
 	Apps       []AppSummary `json:"apps,omitempty"`
 }
 

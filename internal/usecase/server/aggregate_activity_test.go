@@ -67,3 +67,79 @@ func TestAggregateDayActivity_AttributeByUsernameTime(t *testing.T) {
 		t.Fatalf("nested apps=%+v", agg.Sessions[0].Apps)
 	}
 }
+
+func TestAggregateDayActivity_ClosesGhostOnNewLoginSameUser(t *testing.T) {
+	loc := time.UTC
+	day := time.Date(2026, 8, 21, 0, 0, 0, 0, loc)
+	now := time.Date(2026, 8, 21, 21, 10, 0, 0, loc)
+	ghostLogin := time.Date(2026, 8, 21, 20, 51, 0, 0, loc)
+	realLogin := time.Date(2026, 8, 21, 20, 59, 0, 0, loc)
+	realLogout := time.Date(2026, 8, 21, 21, 0, 0, 0, loc)
+
+	events := []domain.ActivityEvent{
+		{Type: domain.EventSessionLogin, Timestamp: ghostLogin, Username: "sasha", SessionID: 1},
+		{Type: domain.EventAppOpen, Timestamp: ghostLogin, Username: "admin", SessionID: 1, AppName: "Steam"},
+		{Type: domain.EventSessionLogin, Timestamp: realLogin, Username: "sasha", SessionID: 3},
+		{Type: domain.EventSessionLogout, Timestamp: realLogout, Username: "sasha", SessionID: 3},
+	}
+	agg := AggregateDayActivity(day, events, now)
+	if len(agg.Sessions) != 2 {
+		t.Fatalf("sessions=%d %+v", len(agg.Sessions), agg.Sessions)
+	}
+	for _, s := range agg.Sessions {
+		if s.Username == "sasha" && s.SessionID == 1 {
+			if s.Logout == nil {
+				t.Fatalf("ghost session still open: %+v", s)
+			}
+			if len(s.Apps) != 0 {
+				t.Fatalf("admin apps should not stick to sasha ghost: %+v", s.Apps)
+			}
+		}
+		if s.SessionID == 3 && s.Logout == nil {
+			t.Fatalf("real session should be closed: %+v", s)
+		}
+	}
+	open := 0
+	for _, s := range agg.Sessions {
+		if s.Logout == nil {
+			open++
+		}
+	}
+	if open != 0 {
+		t.Fatalf("expected no open sessions, open=%d", open)
+	}
+}
+
+func TestAggregateDayActivity_IgnoresDuplicateLoginSameSession(t *testing.T) {
+	loc := time.UTC
+	day := time.Date(2026, 8, 21, 0, 0, 0, 0, loc)
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, loc)
+	login := time.Date(2026, 8, 21, 10, 0, 0, 0, loc)
+	dup := time.Date(2026, 8, 21, 11, 0, 0, 0, loc)
+	events := []domain.ActivityEvent{
+		{Type: domain.EventSessionLogin, Timestamp: login, Username: "kid", SessionID: 2},
+		{Type: domain.EventSessionLogin, Timestamp: dup, Username: "kid", SessionID: 2},
+	}
+	agg := AggregateDayActivity(day, events, now)
+	if len(agg.Sessions) != 1 {
+		t.Fatalf("sessions=%d %+v", len(agg.Sessions), agg.Sessions)
+	}
+	if !agg.Sessions[0].Login.Equal(login) || agg.Sessions[0].Logout != nil {
+		t.Fatalf("want single open session from first login: %+v", agg.Sessions[0])
+	}
+}
+
+	loc := time.UTC
+	day := time.Date(2026, 8, 21, 0, 0, 0, 0, loc)
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, loc)
+	login := time.Date(2026, 8, 21, 10, 0, 0, 0, loc)
+	lock := time.Date(2026, 8, 21, 11, 0, 0, 0, loc)
+	events := []domain.ActivityEvent{
+		{Type: domain.EventSessionLogin, Timestamp: login, Username: "kid", SessionID: 1},
+		{Type: domain.EventSessionLock, Timestamp: lock, Username: "kid", SessionID: 1},
+	}
+	agg := AggregateDayActivity(day, events, now)
+	if len(agg.Sessions) != 1 || !agg.Sessions[0].LockedNow {
+		t.Fatalf("want locked_now session, got %+v", agg.Sessions)
+	}
+}

@@ -23,6 +23,26 @@ func TestDiffSessions_LoginUsesLogonTime(t *testing.T) {
 	}
 }
 
+func TestDiffSessions_UsernameChangeSameID(t *testing.T) {
+	now := time.Now()
+	prev := map[uint32]SessionSnapshot{
+		1: {SessionID: 1, Username: "admin", State: SessionDisconnected},
+	}
+	curr := map[uint32]SessionSnapshot{
+		1: {SessionID: 1, Username: "sasha", State: SessionActive, LogonTime: now},
+	}
+	ev := DiffSessions(prev, curr, now)
+	if len(ev) < 2 {
+		t.Fatalf("events: %+v", ev)
+	}
+	if ev[0].Type != domain.EventSessionLogout || ev[0].Username != "admin" {
+		t.Fatalf("want admin logout, got %+v", ev[0])
+	}
+	if ev[1].Type != domain.EventSessionLogin || ev[1].Username != "sasha" {
+		t.Fatalf("want sasha login, got %+v", ev[1])
+	}
+}
+
 func TestDiffSessions_LoginLockUnlockLogout(t *testing.T) {
 	now := time.Now()
 	prev := map[uint32]SessionSnapshot{}

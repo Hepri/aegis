@@ -126,11 +126,29 @@ function updateOnlineStatus() {
   }
 }
 
+function formatTime(isoStr) {
+  if (!isoStr) return '—';
+  const d = new Date(isoStr);
+  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatSessionRange(s) {
+  const start = formatTime(s.login);
+  if (s.locked_now) return `${start} — экран`;
+  if (!s.logout) return `${start} — сейчас`;
+  return `${start} — ${formatTime(s.logout)}`;
+}
+
+function isSessionActive(s) {
+  return !s.logout && !s.locked_now;
+}
+
 function renderSessionCard(s, { open = false } = {}) {
   const apps = s.apps || [];
-  const active = !s.logout;
+  const active = isSessionActive(s);
+  const locked = s.locked_now;
   const appsHtml = apps.length === 0
-    ? '<p class="emptyHint">Нет приложений в этой сессии</p>'
+    ? '<p class="emptyHint">Нет приложений</p>'
     : `<table class="activityTable"><thead><tr>
         <th>Приложение</th><th>Открыто</th><th>В фокусе</th>
       </tr></thead><tbody>${apps.map(a => `<tr>
@@ -138,22 +156,17 @@ function renderSessionCard(s, { open = false } = {}) {
         <td>${formatDurationMs(a.open_ms)}</td>
         <td>${formatDurationMs(a.focus_ms)}</td>
       </tr>`).join('')}</tbody></table>`;
-  const lockedLine = s.locked_ms
-    ? `<div class="sessionStat">Экран блокировки: <strong>${formatDurationMs(s.locked_ms)}</strong></div>`
+  const lockedHint = (!locked && s.locked_ms)
+    ? `<span class="sessionLocked">экран ${formatDurationMs(s.locked_ms)}</span>`
     : '';
-  return `<details class="sessionCard${active ? ' sessionCardActive' : ''}" ${open || active ? 'open' : ''}>
+  const cls = active ? ' isActive' : (locked ? ' isLocked' : '');
+  return `<details class="sessionCard${cls}" ${open ? 'open' : ''}>
     <summary class="sessionSummary">
-      <div class="sessionTitleRow">
-        <span class="sessionUser">${escapeHtml(s.username || '—')}</span>
-        ${active ? '<span class="sessionBadge">сейчас</span>' : ''}
-      </div>
-      <div class="sessionTimes">
-        <div class="sessionStat">Старт: <strong>${formatDateTime(s.login)}</strong></div>
-        <div class="sessionStat">Конец: <strong>${active ? 'ещё открыта' : formatDateTime(s.logout)}</strong></div>
-        <div class="sessionStat">Длительность: <strong>${formatDurationMs(s.duration_ms)}</strong></div>
-        ${lockedLine}
-        <div class="sessionStat muted">${apps.length} прил.</div>
-      </div>
+      <span class="sessionChevron" aria-hidden="true"></span>
+      <span class="sessionUser">${escapeHtml(s.username || '—')}</span>
+      <span class="sessionRange">${formatSessionRange(s)}</span>
+      <span class="sessionDur">${formatDurationMs(s.duration_ms)}</span>
+      ${lockedHint}
     </summary>
     <div class="sessionBody">${appsHtml}</div>
   </details>`;
@@ -174,16 +187,27 @@ async function renderActivity() {
       sessionsEl.innerHTML = '<p class="emptyHint">Нет сессий за этот день</p>';
       return;
     }
-    const active = sessions.filter(s => !s.logout);
-    const done = sessions.filter(s => !!s.logout);
+    const active = sessions.filter(isSessionActive);
+    const locked = sessions.filter(s => !s.logout && s.locked_now);
+    const done = sessions.filter(s => !!s.logout).slice().reverse();
     let html = '';
     if (active.length) {
-      html += `<h4 class="sessionGroupTitle">Активные</h4>
-        <div class="sessionGroup">${active.map(s => renderSessionCard(s, { open: true })).join('')}</div>`;
+      html += `<section class="sessionGroup">
+        <h4 class="sessionGroupTitle">Активные</h4>
+        ${active.map(s => renderSessionCard(s, { open: true })).join('')}
+      </section>`;
+    }
+    if (locked.length) {
+      html += `<section class="sessionGroup">
+        <h4 class="sessionGroupTitle">Экран блокировки</h4>
+        ${locked.map(s => renderSessionCard(s)).join('')}
+      </section>`;
     }
     if (done.length) {
-      html += `<h4 class="sessionGroupTitle">Завершённые</h4>
-        <div class="sessionGroup">${done.map((s, i) => renderSessionCard(s, { open: i === done.length - 1 && !active.length })).join('')}</div>`;
+      html += `<section class="sessionGroup">
+        <h4 class="sessionGroupTitle">Завершённые</h4>
+        ${done.map(s => renderSessionCard(s)).join('')}
+      </section>`;
     }
     sessionsEl.innerHTML = html;
   } catch (e) {
