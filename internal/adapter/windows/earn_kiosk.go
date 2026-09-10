@@ -19,10 +19,11 @@ const (
 	earnKioskFullName = "Задачки"
 	earnFirewallAllow = "AegisEarnAllow"
 	earnFirewallBlock = "AegisEarnBlock"
+	earnLogonTaskName = "AegisEarnKiosk"
 )
 
 // EnsureEarnKiosk creates/repairs the restricted Tasks account, firewall allowlist
-// for aegis-client.exe → server, and Assigned Access kiosk shell.
+// for aegis-client.exe → server, logon autostart, and Assigned Access kiosk shell.
 func EnsureEarnKiosk(serverURL, exePath string) {
 	if err := ensureEarnUser(); err != nil {
 		log.Printf("earn kiosk user: %v", err)
@@ -30,8 +31,11 @@ func EnsureEarnKiosk(serverURL, exePath string) {
 	if err := ensureEarnFirewall(serverURL, exePath); err != nil {
 		log.Printf("earn kiosk firewall: %v", err)
 	}
+	if err := ensureEarnLogonAutostart(exePath); err != nil {
+		log.Printf("earn kiosk logon autostart: %v", err)
+	}
 	if err := ensureAssignedAccess(exePath); err != nil {
-		log.Printf("earn kiosk Assigned Access: %v", err)
+		log.Printf("earn kiosk Assigned Access: %v (logon autostart still applied)", err)
 	}
 }
 
@@ -40,7 +44,6 @@ func ensureEarnUser() error {
 	check.SysProcAttr = hiddenProcAttr()
 	if err := check.Run(); err != nil {
 		// Empty password: child picks «Задачки» on the login screen with no PIN/password.
-		// Windows still allows blank passwords for interactive console logon by default.
 		add := exec.Command("net", "user", earnKioskUser, "",
 			"/add", "/fullname:"+earnKioskFullName, "/passwordchg:no", "/expires:never", "/y")
 		add.SysProcAttr = hiddenProcAttr()
@@ -69,7 +72,6 @@ func ensureEarnFirewall(serverURL, exePath string) error {
 	}
 	ips, err := net.LookupIP(host)
 	if err != nil || len(ips) == 0 {
-		// Fall back to literal host (may already be an IP)
 		if ip := net.ParseIP(host); ip != nil {
 			ips = []net.IP{ip}
 		} else {
@@ -89,6 +91,7 @@ func ensureEarnFirewall(serverURL, exePath string) error {
 	exePath, _ = filepath.Abs(exePath)
 
 	_ = deleteFirewallRule(earnFirewallAllow)
+	_ = deleteFirewallRule(earnFirewallAllow + "DNS")
 	_ = deleteFirewallRule(earnFirewallBlock)
 
 	allow := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
@@ -105,7 +108,6 @@ func ensureEarnFirewall(serverURL, exePath string) error {
 		return fmt.Errorf("allow rule: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	// DNS must remain available so server_url hostnames still resolve.
 	allowDNS := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
 		"name="+earnFirewallAllow+"DNS",
 		"dir=out", "action=allow",
@@ -115,7 +117,6 @@ func ensureEarnFirewall(serverURL, exePath string) error {
 		"enable=yes",
 	)
 	allowDNS.SysProcAttr = hiddenProcAttr()
-	_ = deleteFirewallRule(earnFirewallAllow + "DNS")
 	if out, err := allowDNS.CombinedOutput(); err != nil {
 		log.Printf("earn DNS allow rule: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -160,26 +161,80 @@ func parseServerHostPort(serverURL string) (host, port string, err error) {
 	return host, port, nil
 }
 
+// ensureEarnLogonAutostart forces a profile + Startup shortcut so earn-kiosk
+// launches even when Assigned Access is unavailable (e.g. Windows Home).
+func ensureEarnLogonAutostart(exePath string) error {
+	exePath, _ = filepath.Abs(exePath)
+	exeEsc := strings.ReplaceAll(exePath, `'`, `''`)
+	ps := fmt.Sprintf(`
+$ErrorActionPreference = 'Continue'
+$user = '%s'
+$exe = '%s'
+$pass = New-Object System.Security.SecureString
+$cred = New-Object System.Management.Automation.PSCredential ($user, $pass)
+try {
+  Start-Process -FilePath 'cmd.exe' -ArgumentList '/c exit' -Credential $cred -LoadUserProfile -WindowStyle Hidden -Wait | Out-Null
+} catch {}
+$profile = $null
+Get-CimInstance Win32_UserProfile | ForEach-Object {
+  try {
+    $acc = (New-Object System.Security.Principal.SecurityIdentifier($_.SID)).Translate([System.Security.Principal.NTAccount]).Value
+    if ($acc -match [regex]::Escape($user) + '$') { $profile = $_.LocalPath }
+  } catch {}
+}
+if (-not $profile) { $profile = Join-Path $env:SystemDrive ('Users\' + $user) }
+$startup = Join-Path $profile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+New-Item -ItemType Directory -Force -Path $startup | Out-Null
+$cmdPath = Join-Path $startup 'AegisEarnKiosk.cmd'
+$line1 = '@echo off'
+$line2 = 'start "" "' + $exe + '" earn-kiosk'
+Set-Content -Path $cmdPath -Encoding ASCII -Value ($line1 + [Environment]::NewLine + $line2)
+Write-Output ("startup=" + $cmdPath)
+`, earnKioskUser, exeEsc)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	cmd.SysProcAttr = hiddenProcAttr()
+	out, err := cmd.CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err != nil {
+		return fmt.Errorf("%w (%s)", err, msg)
+	}
+	log.Printf("Earn logon autostart: %s", msg)
+
+	tr := fmt.Sprintf(`"%s" earn-kiosk`, exePath)
+	_ = exec.Command("schtasks", "/Delete", "/TN", earnLogonTaskName, "/F").Run()
+	task := exec.Command("schtasks", "/Create", "/TN", earnLogonTaskName,
+		"/TR", tr,
+		"/SC", "ONLOGON",
+		"/RU", earnKioskUser,
+		"/RP", "",
+		"/RL", "LIMITED",
+		"/F",
+		"/IT",
+	)
+	task.SysProcAttr = hiddenProcAttr()
+	if out, err := task.CombinedOutput(); err != nil {
+		log.Printf("earn logon task: %v (%s)", err, strings.TrimSpace(string(out)))
+	} else {
+		log.Printf("Earn logon task %s created", earnLogonTaskName)
+	}
+	return nil
+}
+
 func ensureAssignedAccess(exePath string) error {
 	exePath, _ = filepath.Abs(exePath)
-	exePath = strings.ReplaceAll(exePath, `'`, `''`)
-	edge := strings.ReplaceAll(edgePath(), `'`, `''`)
+	exePathXML := strings.ReplaceAll(exePath, `&`, `&amp;`)
+	exePathXML = strings.ReplaceAll(exePathXML, `'`, `''`)
+	// Single-app kiosk shell: our exe with earn-kiosk (not multi-app AllAppsList).
 	ps := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
 <AssignedAccessConfiguration xmlns="http://schemas.microsoft.com/AssignedAccess/2017/config"
-  xmlns:rs5="http://schemas.microsoft.com/AssignedAccess/201810/config"
   xmlns:v4="http://schemas.microsoft.com/AssignedAccess/2021/config">
   <Profiles>
     <Profile Id="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}">
-      <AllAppsList>
-        <AllowedApps>
-          <App DesktopAppPath="%s" rs5:AutoLaunch="true" rs5:AutoLaunchArguments="earn-kiosk" />
-          <App DesktopAppPath="%s" />
-        </AllowedApps>
-      </AllAppsList>
-      <Taskbar rs5:ShowTaskbar="false"/>
+      <KioskModeApp v4:ClassicAppPath="%s" v4:ClassicAppArguments="earn-kiosk" />
     </Profile>
   </Profiles>
   <Configs>
@@ -196,7 +251,7 @@ $obj = Get-CimInstance -Namespace $namespaceName -ClassName $className -ErrorAct
 if (-not $obj) { throw 'MDM_AssignedAccess not available (Windows edition may lack Assigned Access)' }
 $obj.Configuration = [System.Net.WebUtility]::HtmlEncode($xml)
 Set-CimInstance -CimInstance $obj
-`, exePath, edge, earnKioskUser)
+`, exePathXML, earnKioskUser)
 
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = hiddenProcAttr()
@@ -204,7 +259,7 @@ Set-CimInstance -CimInstance $obj
 	if err != nil {
 		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	log.Printf("Assigned Access configured for %s", earnKioskUser)
+	log.Printf("Assigned Access kiosk configured for %s → %s earn-kiosk", earnKioskUser, exePath)
 	return nil
 }
 

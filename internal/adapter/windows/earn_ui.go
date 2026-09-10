@@ -14,13 +14,14 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
 //go:embed earnweb/*
 var earnWebFS embed.FS
 
-// RunEarnKiosk starts a local UI (API proxied to Aegis server) and opens Edge in app mode.
+// RunEarnKiosk starts a local UI (API proxied to Aegis server) and opens Edge fullscreen.
 // Network to the server goes only through this process (aegis-client.exe).
 func RunEarnKiosk(serverURL, clientID string) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -66,17 +67,26 @@ func RunEarnKiosk(serverURL, clientID string) {
 	log.Printf("Earn kiosk UI at %s", openURL)
 
 	edge := edgePath()
+	// Must NOT use CREATE_NO_WINDOW / HideWindow — that made the kiosk invisible.
 	cmd := exec.Command(edge,
-		"--app="+openURL,
+		"--kiosk", openURL,
+		"--edge-kiosk-type=fullscreen",
 		"--no-first-run",
 		"--disable-features=TranslateUI",
 		"--check-for-update-interval=31536000",
 	)
-	cmd.SysProcAttr = hiddenProcAttr()
+	cmd.SysProcAttr = &syscall.SysProcAttr{}
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		log.Printf("start Edge app mode: %v — keeping local server up at %s", err, openURL)
+		log.Printf("start Edge kiosk: %v — trying start via cmd", err)
+		fallback := exec.Command("cmd", "/c", "start", "", edge, "--kiosk", openURL, "--edge-kiosk-type=fullscreen")
+		fallback.SysProcAttr = &syscall.SysProcAttr{}
+		if err2 := fallback.Start(); err2 != nil {
+			log.Printf("fallback start failed: %v — server kept at %s", err2, openURL)
+			select {}
+		}
+		_ = fallback.Wait()
 		select {}
 	}
 	_ = cmd.Wait()
