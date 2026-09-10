@@ -17,14 +17,14 @@ import (
 const (
 	earnKioskUser     = "AegisTasks"
 	earnKioskFullName = "Задачки"
-	earnFirewallAllow = "AegisEarnAllow" // aegis-client.exe service allowlist
+	earnFirewallAllow = "AegisEarnAllow"
 	earnFirewallBlock = "AegisEarnBlock"
-	earnUserFWPrefix  = "AegisTasksNet" // per-user firewall (only AegisTasks SID)
+	earnUserFWPrefix  = "AegisTasksNet"
 	earnLogonTaskName = "AegisEarnKiosk"
+	earnLauncherName  = "AegisEarnKiosk.cmd"
 )
 
-// EnsureEarnKiosk creates the Задачки account, locks it down (AA + Shell + policies +
-// per-user firewall only to Aegis), and points Edge kiosk at /earn.
+// EnsureEarnKiosk creates/locks Задачки and ensures Edge opens /earn on logon.
 func EnsureEarnKiosk(serverURL, clientID, exePath string) {
 	if err := ensureEarnUser(); err != nil {
 		log.Printf("earn kiosk user: %v", err)
@@ -34,14 +34,22 @@ func EnsureEarnKiosk(serverURL, clientID, exePath string) {
 	}
 	earnURL := buildEarnURL(serverURL, clientID)
 	log.Printf("Earn kiosk URL: %s", earnURL)
-	if err := ensureEarnUserLockdown(serverURL, earnURL); err != nil {
+
+	launcher, err := writeEarnLauncher(earnURL)
+	if err != nil {
+		log.Printf("earn launcher: %v", err)
+	} else {
+		log.Printf("Earn launcher: %s", launcher)
+	}
+
+	if err := ensureEarnUserLockdown(serverURL, earnURL, launcher); err != nil {
 		log.Printf("earn kiosk user lockdown: %v", err)
 	}
-	if err := ensureEarnLogonAutostart(earnURL); err != nil {
+	if err := ensureEarnLogonAutostart(earnURL, launcher); err != nil {
 		log.Printf("earn kiosk logon autostart: %v", err)
 	}
 	if err := ensureAssignedAccess(earnURL); err != nil {
-		log.Printf("earn kiosk Assigned Access: %v (Shell/Startup/firewall still applied)", err)
+		log.Printf("earn kiosk Assigned Access: %v (launcher/Shell still applied)", err)
 	}
 }
 
@@ -50,29 +58,74 @@ func buildEarnURL(serverURL, clientID string) string {
 	return base + "/earn?client_id=" + url.QueryEscape(clientID)
 }
 
+func writeEarnLauncher(earnURL string) (string, error) {
+	dir := filepath.Join(os.Getenv("ProgramData"), "Aegis")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, earnLauncherName)
+	edge := edgePath()
+	// Restart loop: if Edge closes, reopen. Ctrl+Alt+Del still works to switch user.
+	content := fmt.Sprintf("@echo off\r\n"+
+		"title Aegis Earn Kiosk\r\n"+
+		":loop\r\n"+
+		"\"%s\" --kiosk \"%s\" --edge-kiosk-type=fullscreen --no-first-run --disable-features=TranslateUI\r\n"+
+		"timeout /t 1 /nobreak >nul\r\n"+
+		"goto loop\r\n", edge, earnURL)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func ensureEarnUser() error {
 	check := exec.Command("net", "user", earnKioskUser)
 	check.SysProcAttr = hiddenProcAttr()
-	if err := check.Run(); err != nil {
-		add := exec.Command("net", "user", earnKioskUser, "",
+	exists := check.Run() == nil
+
+	// Temporary password so we can create a profile with runas; cleared afterward.
+	tempPass := "AegisTmp1!"
+	if !exists {
+		add := exec.Command("net", "user", earnKioskUser, tempPass,
 			"/add", "/fullname:"+earnKioskFullName, "/passwordchg:no", "/expires:never", "/y")
 		add.SysProcAttr = hiddenProcAttr()
 		if out, err := add.CombinedOutput(); err != nil {
 			return fmt.Errorf("create user: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
-		log.Printf("Created local user %s (no password)", earnKioskUser)
+		log.Printf("Created local user %s", earnKioskUser)
 	} else {
-		set := exec.Command("net", "user", earnKioskUser, "", "/passwordchg:no")
+		set := exec.Command("net", "user", earnKioskUser, tempPass, "/passwordchg:no")
 		set.SysProcAttr = hiddenProcAttr()
-		if out, err := set.CombinedOutput(); err != nil {
-			log.Printf("clear %s password: %v (%s)", earnKioskUser, err, strings.TrimSpace(string(out)))
-		}
+		_ = set.Run()
 	}
+
 	_ = exec.Command("net", "localgroup", "Users", earnKioskUser, "/add").Run()
 	for _, g := range []string{"Administrators", "Remote Desktop Users", "Power Users"} {
 		cmd := exec.Command("net", "localgroup", g, earnKioskUser, "/delete")
 		cmd.SysProcAttr = hiddenProcAttr()
 		_ = cmd.Run()
+	}
+
+	// Bootstrap profile (needs non-empty password on many Win11 builds).
+	ps := fmt.Sprintf(`
+$ErrorActionPreference = 'Continue'
+$pass = ConvertTo-SecureString '%s' -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential ('%s', $pass)
+try {
+  Start-Process -FilePath 'cmd.exe' -ArgumentList '/c exit' -Credential $cred -LoadUserProfile -WindowStyle Hidden -Wait | Out-Null
+} catch { Write-Output $_ }
+`, tempPass, earnKioskUser)
+	boot := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	boot.SysProcAttr = hiddenProcAttr()
+	if out, err := boot.CombinedOutput(); err != nil {
+		log.Printf("earn profile bootstrap: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	// Back to blank password for easy login-screen click.
+	clear := exec.Command("net", "user", earnKioskUser, "", "/passwordchg:no")
+	clear.SysProcAttr = hiddenProcAttr()
+	if out, err := clear.CombinedOutput(); err != nil {
+		log.Printf("clear %s password: %v (%s)", earnKioskUser, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -108,42 +161,24 @@ func ensureEarnFirewall(serverURL, exePath string) error {
 		return err
 	}
 	exePath, _ = filepath.Abs(exePath)
-
 	_ = deleteFirewallRule(earnFirewallAllow)
 	_ = deleteFirewallRule(earnFirewallAllow + "DNS")
 	_ = deleteFirewallRule(earnFirewallBlock)
 
 	allow := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
-		"name="+earnFirewallAllow,
-		"dir=out", "action=allow",
-		"program="+exePath,
-		"remoteip="+remote,
-		"protocol=TCP",
-		"remoteport="+port,
-		"enable=yes",
-	)
+		"name="+earnFirewallAllow, "dir=out", "action=allow", "program="+exePath,
+		"remoteip="+remote, "protocol=TCP", "remoteport="+port, "enable=yes")
 	allow.SysProcAttr = hiddenProcAttr()
 	if out, err := allow.CombinedOutput(); err != nil {
 		return fmt.Errorf("allow rule: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-
 	allowDNS := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
-		"name="+earnFirewallAllow+"DNS",
-		"dir=out", "action=allow",
-		"program="+exePath,
-		"protocol=UDP",
-		"remoteport=53",
-		"enable=yes",
-	)
+		"name="+earnFirewallAllow+"DNS", "dir=out", "action=allow", "program="+exePath,
+		"protocol=UDP", "remoteport=53", "enable=yes")
 	allowDNS.SysProcAttr = hiddenProcAttr()
 	_ = allowDNS.Run()
-
 	block := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
-		"name="+earnFirewallBlock,
-		"dir=out", "action=block",
-		"program="+exePath,
-		"enable=yes",
-	)
+		"name="+earnFirewallBlock, "dir=out", "action=block", "program="+exePath, "enable=yes")
 	block.SysProcAttr = hiddenProcAttr()
 	if out, err := block.CombinedOutput(); err != nil {
 		return fmt.Errorf("block rule: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -182,42 +217,38 @@ func edgeKioskArgs(earnURL string) string {
 	return fmt.Sprintf("--kiosk %s --edge-kiosk-type=fullscreen --no-first-run --disable-features=TranslateUI", earnURL)
 }
 
-// ensureEarnUserLockdown: per-user firewall (only AegisTasks → Aegis), Shell=Edge kiosk,
-// and HKCU policies that strip Task Manager / Run / CMD / Control Panel.
-func ensureEarnUserLockdown(serverURL, earnURL string) error {
+func ensureEarnUserLockdown(serverURL, earnURL, launcher string) error {
 	remote, port, err := resolveServerIPv4Port(serverURL)
 	if err != nil {
 		return err
 	}
-	edge := edgePath()
-	shell := fmt.Sprintf(`%s %s`, edge, edgeKioskArgs(earnURL))
+	host, _, _ := parseServerHostPort(serverURL)
+	if launcher == "" {
+		launcher = filepath.Join(os.Getenv("ProgramData"), "Aegis", earnLauncherName)
+	}
+	// Shell must be a single executable path — cmd.exe running our launcher is reliable.
+	shell := fmt.Sprintf(`%s /c "%s"`, filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe"), launcher)
 
 	ps := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $user = '%s'
 $remote = '%s'
 $port = '%s'
+$hostName = '%s'
+$earnUrl = '%s'
 $shell = '%s'
 $fwPrefix = '%s'
 
-# Resolve SID
 $sid = (New-Object System.Security.Principal.NTAccount($user)).Translate([System.Security.Principal.SecurityIdentifier]).Value
 $localUser = 'O:LSD:(A;;CC;;;' + $sid + ')'
 
-# --- Per-user firewall: only this SID, not other accounts ---
 Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like ($fwPrefix + '*') } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-
-New-NetFirewallRule -DisplayName ($fwPrefix + 'AllowAegis') -Direction Outbound -Action Allow -Protocol TCP -RemoteAddress ($remote -split ',') -RemotePort $port -LocalUser $localUser -Profile Any | Out-Null
-New-NetFirewallRule -DisplayName ($fwPrefix + 'AllowDNS') -Direction Outbound -Action Allow -Protocol UDP -RemotePort 53 -LocalUser $localUser -Profile Any | Out-Null
-New-NetFirewallRule -DisplayName ($fwPrefix + 'AllowLoopback') -Direction Outbound -Action Allow -RemoteAddress @('127.0.0.1','::1') -LocalUser $localUser -Profile Any | Out-Null
-New-NetFirewallRule -DisplayName ($fwPrefix + 'BlockRest') -Direction Outbound -Action Block -LocalUser $localUser -Profile Any | Out-Null
-
-# --- Profile + Shell + lockdown policies ---
-$pass = New-Object System.Security.SecureString
-$cred = New-Object System.Management.Automation.PSCredential ($user, $pass)
 try {
-  Start-Process -FilePath 'cmd.exe' -ArgumentList '/c exit' -Credential $cred -LoadUserProfile -WindowStyle Hidden -Wait | Out-Null
-} catch {}
+  New-NetFirewallRule -DisplayName ($fwPrefix + 'AllowAegis') -Direction Outbound -Action Allow -Protocol TCP -RemoteAddress ($remote -split ',') -RemotePort $port -LocalUser $localUser -Profile Any | Out-Null
+  New-NetFirewallRule -DisplayName ($fwPrefix + 'AllowDNS') -Direction Outbound -Action Allow -Protocol UDP -RemotePort 53 -LocalUser $localUser -Profile Any | Out-Null
+  New-NetFirewallRule -DisplayName ($fwPrefix + 'AllowLoopback') -Direction Outbound -Action Allow -RemoteAddress @('127.0.0.1','::1') -LocalUser $localUser -Profile Any | Out-Null
+  New-NetFirewallRule -DisplayName ($fwPrefix + 'BlockRest') -Direction Outbound -Action Block -LocalUser $localUser -Profile Any | Out-Null
+} catch { Write-Output ("fw_err=" + $_) }
 
 $profile = $null
 Get-CimInstance Win32_UserProfile | ForEach-Object {
@@ -226,48 +257,80 @@ Get-CimInstance Win32_UserProfile | ForEach-Object {
     if ($acc -match [regex]::Escape($user) + '$') { $profile = $_.LocalPath }
   } catch {}
 }
-if (-not $profile) { throw "profile for $user not found" }
+if (-not $profile) { throw "profile for $user not found — log in once as Задачки then restart Aegis service" }
 $ntuser = Join-Path $profile 'NTUSER.DAT'
 if (-not (Test-Path $ntuser)) { throw "missing $ntuser" }
 
-$hive = 'HKU\AegisEarnTemp'
-reg unload $hive 2>$null | Out-Null
-$load = reg load $hive $ntuser 2>&1
-if ($LASTEXITCODE -ne 0) { throw "reg load failed: $load" }
-try {
-  $root = 'Registry::HKU\AegisEarnTemp'
+function Set-EarnPolicies($root) {
   $winlogon = Join-Path $root 'Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
   New-Item -Path $winlogon -Force | Out-Null
   New-ItemProperty -Path $winlogon -Name Shell -PropertyType String -Value $shell -Force | Out-Null
 
   $sysPol = Join-Path $root 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
   New-Item -Path $sysPol -Force | Out-Null
-  New-ItemProperty -Path $sysPol -Name DisableTaskMgr -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $sysPol -Name DisableRegistryTools -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $sysPol -Name DisableChangePassword -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $sysPol -Name DisableLockWorkstation -PropertyType DWord -Value 1 -Force | Out-Null
+  foreach ($n in @('DisableTaskMgr','DisableRegistryTools','DisableChangePassword','DisableLockWorkstation')) {
+    New-ItemProperty -Path $sysPol -Name $n -PropertyType DWord -Value 1 -Force | Out-Null
+  }
 
   $expPol = Join-Path $root 'Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
   New-Item -Path $expPol -Force | Out-Null
-  New-ItemProperty -Path $expPol -Name NoRun -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $expPol -Name NoControlPanel -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $expPol -Name NoClose -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $expPol -Name NoLogoff -PropertyType DWord -Value 0 -Force | Out-Null
-  New-ItemProperty -Path $expPol -Name NoViewContextMenu -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $expPol -Name NoTrayContextMenu -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $expPol -Name NoSetTaskbar -PropertyType DWord -Value 1 -Force | Out-Null
+  foreach ($n in @('NoRun','NoControlPanel','NoClose','NoViewContextMenu','NoTrayContextMenu','NoSetTaskbar')) {
+    New-ItemProperty -Path $expPol -Name $n -PropertyType DWord -Value 1 -Force | Out-Null
+  }
 
   $cmdPol = Join-Path $root 'Software\Policies\Microsoft\Windows\System'
   New-Item -Path $cmdPol -Force | Out-Null
-  New-ItemProperty -Path $cmdPol -Name DisableCMD -PropertyType DWord -Value 1 -Force | Out-Null
+  # Do NOT DisableCMD — Shell is cmd.exe running the Edge launcher.
+  Remove-ItemProperty -Path $cmdPol -Name DisableCMD -ErrorAction SilentlyContinue
 
+  # Edge: block all URLs except Aegis; force dead proxy with bypass for Aegis host/IP.
+  $edge = Join-Path $root 'Software\Policies\Microsoft\Edge'
+  New-Item -Path $edge -Force | Out-Null
+  New-ItemProperty -Path $edge -Name ProxyMode -PropertyType String -Value 'fixed_servers' -Force | Out-Null
+  New-ItemProperty -Path $edge -Name ProxyServer -PropertyType String -Value 'http://127.0.0.1:9' -Force | Out-Null
+  $bypass = ($remote -split ',' ) + @($hostName, 'localhost', '127.0.0.1') -join ';'
+  New-ItemProperty -Path $edge -Name ProxyBypassList -PropertyType String -Value $bypass -Force | Out-Null
+
+  $block = Join-Path $edge 'URLBlocklist'
+  New-Item -Path $block -Force | Out-Null
+  New-ItemProperty -Path $block -Name '1' -PropertyType String -Value '*' -Force | Out-Null
+
+  $allow = Join-Path $edge 'URLAllowlist'
+  New-Item -Path $allow -Force | Out-Null
+  $i = 1
+  foreach ($p in @($earnUrl, ("http://" + $hostName + ":*"), ("http://" + $hostName + ":*/*"))) {
+    New-ItemProperty -Path $allow -Name ([string]$i) -PropertyType String -Value $p -Force | Out-Null
+    $i++
+  }
+  foreach ($ip in ($remote -split ',')) {
+    New-ItemProperty -Path $allow -Name ([string]$i) -PropertyType String -Value ("http://" + $ip + ":*") -Force | Out-Null; $i++
+    New-ItemProperty -Path $allow -Name ([string]$i) -PropertyType String -Value ("http://" + $ip + ":*/*") -Force | Out-Null; $i++
+  }
+}
+
+# If user is logged in, write live hive; always also write NTUSER.DAT for next logon.
+$live = 'Registry::HKU\' + $sid
+if (Test-Path $live) {
+  Set-EarnPolicies $live
+  Write-Output 'live_hive=1'
+}
+
+$hive = 'HKU\AegisEarnTemp'
+reg unload $hive 2>$null | Out-Null
+$load = reg load $hive $ntuser 2>&1
+if ($LASTEXITCODE -ne 0) { throw "reg load failed: $load" }
+try {
+  Set-EarnPolicies 'Registry::HKU\AegisEarnTemp'
   Write-Output ("sid=" + $sid + " shell=" + $shell + " net=" + $remote + ":" + $port)
 } finally {
   [gc]::Collect()
-  Start-Sleep -Milliseconds 300
+  Start-Sleep -Milliseconds 400
   reg unload $hive | Out-Null
 }
-`, earnKioskUser, remote, port, strings.ReplaceAll(shell, `'`, `''`), earnUserFWPrefix)
+`, earnKioskUser, remote, port, host,
+		strings.ReplaceAll(earnURL, `'`, `''`),
+		strings.ReplaceAll(shell, `'`, `''`),
+		earnUserFWPrefix)
 
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = hiddenProcAttr()
@@ -280,20 +343,15 @@ try {
 	return nil
 }
 
-func ensureEarnLogonAutostart(earnURL string) error {
-	edge := edgePath()
-	edgeEsc := strings.ReplaceAll(edge, `'`, `''`)
-	urlEsc := strings.ReplaceAll(earnURL, `'`, `''`)
+func ensureEarnLogonAutostart(earnURL, launcher string) error {
+	if launcher == "" {
+		launcher = filepath.Join(os.Getenv("ProgramData"), "Aegis", earnLauncherName)
+	}
+	launcherEsc := strings.ReplaceAll(launcher, `'`, `''`)
 	ps := fmt.Sprintf(`
 $ErrorActionPreference = 'Continue'
 $user = '%s'
-$edge = '%s'
-$url = '%s'
-$pass = New-Object System.Security.SecureString
-$cred = New-Object System.Management.Automation.PSCredential ($user, $pass)
-try {
-  Start-Process -FilePath 'cmd.exe' -ArgumentList '/c exit' -Credential $cred -LoadUserProfile -WindowStyle Hidden -Wait | Out-Null
-} catch {}
+$launcher = '%s'
 $profile = $null
 Get-CimInstance Win32_UserProfile | ForEach-Object {
   try {
@@ -305,13 +363,9 @@ if (-not $profile) { $profile = Join-Path $env:SystemDrive ('Users\' + $user) }
 $startup = Join-Path $profile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
 New-Item -ItemType Directory -Force -Path $startup | Out-Null
 $cmdPath = Join-Path $startup 'AegisEarnKiosk.cmd'
-$lines = @(
-  '@echo off',
-  ('start "" "' + $edge + '" --kiosk "' + $url + '" --edge-kiosk-type=fullscreen --no-first-run')
-)
-Set-Content -Path $cmdPath -Encoding ASCII -Value ($lines -join [Environment]::NewLine)
+Copy-Item -Force $launcher $cmdPath
 Write-Output ("startup=" + $cmdPath)
-`, earnKioskUser, edgeEsc, urlEsc)
+`, earnKioskUser, launcherEsc)
 
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = hiddenProcAttr()
@@ -322,12 +376,11 @@ Write-Output ("startup=" + $cmdPath)
 	}
 	log.Printf("Earn logon autostart: %s", msg)
 
-	tr := fmt.Sprintf(`%s %s`, edge, edgeKioskArgs(earnURL))
+	tr := fmt.Sprintf(`"%s"`, launcher)
 	_ = exec.Command("schtasks", "/Delete", "/TN", earnLogonTaskName, "/F").Run()
 	task := exec.Command("schtasks", "/Create", "/TN", earnLogonTaskName,
 		"/TR", tr, "/SC", "ONLOGON", "/RU", earnKioskUser, "/RP", "",
-		"/RL", "LIMITED", "/F", "/IT",
-	)
+		"/RL", "LIMITED", "/F", "/IT")
 	task.SysProcAttr = hiddenProcAttr()
 	if out, err := task.CombinedOutput(); err != nil {
 		log.Printf("earn logon task: %v (%s)", err, strings.TrimSpace(string(out)))
@@ -342,6 +395,10 @@ func ensureAssignedAccess(earnURL string) error {
 	args := edgeKioskArgs(earnURL)
 	argsXML := strings.ReplaceAll(args, `&`, `&amp;`)
 	argsXML = strings.ReplaceAll(argsXML, `'`, `''`)
+	// Also try launching our cmd launcher as classic app (more reliable args).
+	launcher := filepath.Join(os.Getenv("ProgramData"), "Aegis", earnLauncherName)
+	launcherXML := strings.ReplaceAll(launcher, `&`, `&amp;`)
+	launcherXML = strings.ReplaceAll(launcherXML, `'`, `''`)
 	ps := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $xml = @"
@@ -350,7 +407,7 @@ $xml = @"
   xmlns:v4="http://schemas.microsoft.com/AssignedAccess/2021/config">
   <Profiles>
     <Profile Id="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}">
-      <KioskModeApp v4:ClassicAppPath="%s" v4:ClassicAppArguments="%s" />
+      <KioskModeApp v4:ClassicAppPath="%s" v4:ClassicAppArguments="/c \"%s\"" />
     </Profile>
   </Profiles>
   <Configs>
@@ -368,15 +425,17 @@ if (-not $obj) { throw 'MDM_AssignedAccess not available' }
 $obj.Configuration = [System.Net.WebUtility]::HtmlEncode($xml)
 Set-CimInstance -CimInstance $obj
 Write-Output 'ok'
-`, edgeXML, argsXML, earnKioskUser)
+`, filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe"), launcherXML, earnKioskUser)
 
+	_ = edgeXML
+	_ = argsXML
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = hiddenProcAttr()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	log.Printf("Assigned Access: Edge kiosk → %s", earnURL)
+	log.Printf("Assigned Access: cmd launcher → %s", earnURL)
 	return nil
 }
 
