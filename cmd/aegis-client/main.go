@@ -85,7 +85,7 @@ func (p *program) run() {
 		return
 	}
 
-	windows.EnsureEarnKiosk(cfg.ServerURL, exePath)
+	windows.EnsureEarnKiosk(cfg.ServerURL, cfg.ClientID, exePath)
 
 	fetcher := httpadapter.NewHTTPConfigFetcher(cfg.ServerURL, cfg.ClientID)
 	fetcher.SetClientVersion(Version)
