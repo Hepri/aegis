@@ -21,11 +21,25 @@ body {
   margin: 0 auto;
   padding: 2rem 1.25rem 3rem;
 }
-header h1 {
-  margin: 0 0 0.25rem;
+.earn header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.earn header h1 {
+  flex: 1 1 auto;
+  margin: 0;
   font-size: 1.75rem;
   font-weight: 650;
 }
+.exitBtn {
+  background: #3a4552 !important;
+  margin-left: auto;
+}
+.exitBtn:hover { background: #4a5562 !important; }
+
 .muted { color: var(--muted); }
 .card {
   background: var(--card);

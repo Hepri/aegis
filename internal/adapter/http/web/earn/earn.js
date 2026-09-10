@@ -1,10 +1,25 @@
 const params = new URLSearchParams(location.search);
 let clientId = params.get('client_id') || '';
 let userId = params.get('user_id') || '';
+let exitUrl = params.get('exit_url') || '';
 let balance = 0;
 let currentTask = null;
 
 const $ = (id) => document.getElementById(id);
+
+if (exitUrl) {
+  const btn = $('exitBtn');
+  btn.hidden = false;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = 'Выход…';
+    try {
+      await fetch(exitUrl, { method: 'POST', mode: 'cors' });
+    } catch (_) {
+      try { location.href = exitUrl; } catch (__) {}
+    }
+  };
+}
 
 async function api(path, opts) {
   const res = await fetch(path, opts);

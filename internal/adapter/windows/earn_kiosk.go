@@ -59,19 +59,19 @@ func buildEarnURL(serverURL, clientID string) string {
 }
 
 func writeEarnLauncher(earnURL string) (string, error) {
+	_ = earnURL // URL is resolved by earn-kiosk from yaml
 	dir := filepath.Join(os.Getenv("ProgramData"), "Aegis")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, earnLauncherName)
-	edge := edgePath()
-	// Restart loop: if Edge closes, reopen. Ctrl+Alt+Del still works to switch user.
+	exe := filepath.Join(`C:\Program Files\Aegis`, "aegis-client.exe")
+	if p, err := os.Executable(); err == nil {
+		exe = p
+	}
 	content := fmt.Sprintf("@echo off\r\n"+
 		"title Aegis Earn Kiosk\r\n"+
-		":loop\r\n"+
-		"\"%s\" --kiosk \"%s\" --edge-kiosk-type=fullscreen --no-first-run --disable-features=TranslateUI\r\n"+
-		"timeout /t 1 /nobreak >nul\r\n"+
-		"goto loop\r\n", edge, earnURL)
+		"\"%s\" earn-kiosk\r\n", exe)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return "", err
 	}
@@ -298,7 +298,7 @@ function Set-EarnPolicies($root) {
   $allow = Join-Path $edge 'URLAllowlist'
   New-Item -Path $allow -Force | Out-Null
   $i = 1
-  foreach ($p in @($earnUrl, ("http://" + $hostName + ":*"), ("http://" + $hostName + ":*/*"))) {
+  foreach ($p in @($earnUrl, ("http://" + $hostName + ":*"), ("http://" + $hostName + ":*/*"), 'http://127.0.0.1:*', 'http://127.0.0.1:*/*', 'http://localhost:*', 'http://localhost:*/*')) {
     New-ItemProperty -Path $allow -Name ([string]$i) -PropertyType String -Value $p -Force | Out-Null
     $i++
   }
