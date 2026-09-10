@@ -85,6 +85,8 @@ func (p *program) run() {
 		return
 	}
 
+	windows.EnsureEarnKiosk(cfg.ServerURL, exePath)
+
 	fetcher := httpadapter.NewHTTPConfigFetcher(cfg.ServerURL, cfg.ClientID)
 	fetcher.SetClientVersion(Version)
 	ctrl := windows.NewUserControl()
@@ -277,6 +279,11 @@ func main() {
 		return
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "earn-kiosk" {
+		runEarnKioskMode()
+		return
+	}
+
 	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
 	installServer := installCmd.String("server-url", "", "Server URL (e.g. http://server:8080)")
 	installClientID := installCmd.String("client-id", "", "Client ID (from web UI, or omit with --client-name)")
@@ -307,6 +314,35 @@ func main() {
 	default:
 		runAsService()
 	}
+}
+
+func runEarnKioskMode() {
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Fatal(err)
+	}
+	exeDir := filepath.Dir(exePath)
+	logPath := filepath.Join(exeDir, "aegis-client-earn.log")
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666); err == nil {
+		defer f.Close()
+		log.SetOutput(f)
+	}
+	cfgPath := `C:\Program Files\Aegis\aegis-client.yaml`
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		cfgPath = filepath.Join(exeDir, "aegis-client.yaml")
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		log.Fatalf("read config: %v", err)
+	}
+	var cfg config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Fatalf("parse config: %v", err)
+	}
+	if cfg.ServerURL == "" || cfg.ClientID == "" {
+		log.Fatal("server_url and client_id required")
+	}
+	windows.RunEarnKiosk(cfg.ServerURL, cfg.ClientID)
 }
 
 func runAsService() {

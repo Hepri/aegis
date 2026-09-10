@@ -75,6 +75,14 @@ async function deleteTemporaryAccess(clientId, requestId) {
   await fetch(`${API}/clients/${clientId}/temporary-access/${requestId}`, { method: 'DELETE' });
 }
 
+async function updateEarnSettings(clientId, settings) {
+  await fetch(`${API}/clients/${clientId}/earn-settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings)
+  });
+}
+
 const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const dayLabels = { monday: 'Пн', tuesday: 'Вт', wednesday: 'Ср', thursday: 'Чт', friday: 'Пт', saturday: 'Сб', sunday: 'Вс' };
 
@@ -132,6 +140,10 @@ function formatTime(isoStr) {
   return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
+function isHiddenActivityUser(username) {
+  return String(username || '').toLowerCase() === 'admin';
+}
+
 function formatSessionRange(s) {
   const start = formatTime(s.login);
   if (s.locked_now) return `${start} — экран`;
@@ -141,6 +153,12 @@ function formatSessionRange(s) {
 
 function isSessionActive(s) {
   return !s.logout && !s.locked_now;
+}
+
+function sessionSortKey(s) {
+  if (isSessionActive(s)) return 0;
+  if (!s.logout && s.locked_now) return 1;
+  return 2;
 }
 
 function renderSessionCard(s, { open = false } = {}) {
@@ -159,12 +177,14 @@ function renderSessionCard(s, { open = false } = {}) {
   const lockedHint = (!locked && s.locked_ms)
     ? `<span class="sessionLocked">экран ${formatDurationMs(s.locked_ms)}</span>`
     : '';
+  const status = active ? '<span class="sessionStatus active">сейчас</span>'
+    : (locked ? '<span class="sessionStatus locked">экран</span>' : '');
   const cls = active ? ' isActive' : (locked ? ' isLocked' : '');
   return `<details class="sessionCard${cls}" ${open ? 'open' : ''}>
     <summary class="sessionSummary">
       <span class="sessionChevron" aria-hidden="true"></span>
-      <span class="sessionUser">${escapeHtml(s.username || '—')}</span>
       <span class="sessionRange">${formatSessionRange(s)}</span>
+      ${status}
       <span class="sessionDur">${formatDurationMs(s.duration_ms)}</span>
       ${lockedHint}
     </summary>
@@ -172,10 +192,96 @@ function renderSessionCard(s, { open = false } = {}) {
   </details>`;
 }
 
+function groupSessionsByUser(sessions) {
+  const byUser = new Map();
+  for (const s of sessions) {
+    const user = s.username || '—';
+    if (isHiddenActivityUser(user)) continue;
+    if (!byUser.has(user)) byUser.set(user, []);
+    byUser.get(user).push(s);
+  }
+  const groups = [];
+  for (const [username, list] of byUser) {
+    list.sort((a, b) => {
+      const ka = sessionSortKey(a);
+      const kb = sessionSortKey(b);
+      if (ka !== kb) return ka - kb;
+      return new Date(b.login) - new Date(a.login);
+    });
+    groups.push({ username, sessions: list });
+  }
+  groups.sort((a, b) => {
+    const aActive = a.sessions.some(isSessionActive) ? 0 : 1;
+    const bActive = b.sessions.some(isSessionActive) ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    return a.username.localeCompare(b.username, 'ru');
+  });
+  return groups;
+}
+
+function buildDayFocusSummaryByUser(sessions) {
+  const byUser = new Map();
+  for (const s of sessions) {
+    const user = s.username || '—';
+    if (isHiddenActivityUser(user)) continue;
+    if (!byUser.has(user)) byUser.set(user, new Map());
+    const byKey = byUser.get(user);
+    for (const a of (s.apps || [])) {
+      const focus = Number(a.focus_ms) || 0;
+      if (focus <= 0) continue;
+      const key = a.exe_path || a.app_name || '—';
+      const cur = byKey.get(key) || { app_name: a.app_name || a.exe_path || '—', exe_path: a.exe_path || '', focus_ms: 0 };
+      if (a.app_name) cur.app_name = a.app_name;
+      cur.focus_ms += focus;
+      byKey.set(key, cur);
+    }
+  }
+  const users = [];
+  for (const [username, byKey] of byUser) {
+    const apps = Array.from(byKey.values()).sort((a, b) => b.focus_ms - a.focus_ms);
+    const totalFocusMs = apps.reduce((sum, a) => sum + a.focus_ms, 0);
+    users.push({ username, totalFocusMs, apps });
+  }
+  users.sort((a, b) => b.totalFocusMs - a.totalFocusMs || a.username.localeCompare(b.username, 'ru'));
+  return users;
+}
+
+function renderDaySummary(sessions) {
+  const users = buildDayFocusSummaryByUser(sessions);
+  if (users.length === 0 || users.every(u => u.apps.length === 0)) {
+    return `<div class="daySummary">
+      <h4 class="daySummaryTitle">Сводка за день</h4>
+      <p class="emptyHint">Нет данных по приложениям</p>
+    </div>`;
+  }
+  return `<div class="daySummary">
+    <h4 class="daySummaryTitle">Сводка за день</h4>
+    <div class="daySummaryUsers">${users.map(u => `
+      <div class="daySummaryUser">
+        <div class="daySummaryTotal">
+          <span class="daySummaryUserName">${escapeHtml(u.username)}</span>
+          <span>в фокусе: <strong>${formatDurationMs(u.totalFocusMs)}</strong></span>
+        </div>
+        ${u.apps.length === 0
+          ? '<p class="emptyHint">Нет фокуса</p>'
+          : `<table class="activityTable">
+              <thead><tr><th>Приложение</th><th>В фокусе</th></tr></thead>
+              <tbody>${u.apps.map(a => `<tr>
+                <td title="${escapeAttr(a.exe_path || '')}">${escapeHtml(a.app_name || '—')}</td>
+                <td>${formatDurationMs(a.focus_ms)}</td>
+              </tr>`).join('')}</tbody>
+            </table>`}
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
 async function renderActivity() {
   const sessionsEl = document.getElementById('activitySessions');
+  const summaryEl = document.getElementById('activityDaySummary');
   if (!currentClientId) {
     sessionsEl.innerHTML = '';
+    if (summaryEl) summaryEl.innerHTML = '';
     return;
   }
   const dateInput = document.getElementById('activityDate');
@@ -184,33 +290,27 @@ async function renderActivity() {
     const data = await getActivity(currentClientId, dateInput.value);
     const sessions = data.sessions || [];
     if (sessions.length === 0) {
+      if (summaryEl) summaryEl.innerHTML = '';
       sessionsEl.innerHTML = '<p class="emptyHint">Нет сессий за этот день</p>';
       return;
     }
-    const active = sessions.filter(isSessionActive);
-    const locked = sessions.filter(s => !s.logout && s.locked_now);
-    const done = sessions.filter(s => !!s.logout).slice().reverse();
-    let html = '';
-    if (active.length) {
-      html += `<section class="sessionGroup">
-        <h4 class="sessionGroupTitle">Активные</h4>
-        ${active.map(s => renderSessionCard(s, { open: true })).join('')}
-      </section>`;
+    if (summaryEl) summaryEl.innerHTML = renderDaySummary(sessions);
+    const groups = groupSessionsByUser(sessions);
+    if (groups.length === 0) {
+      sessionsEl.innerHTML = '<p class="emptyHint">Нет сессий за этот день</p>';
+      return;
     }
-    if (locked.length) {
-      html += `<section class="sessionGroup">
-        <h4 class="sessionGroupTitle">Экран блокировки</h4>
-        ${locked.map(s => renderSessionCard(s)).join('')}
+    sessionsEl.innerHTML = groups.map(g => {
+      const hasActive = g.sessions.some(isSessionActive);
+      return `<section class="sessionGroup">
+        <h4 class="sessionGroupTitle">${escapeHtml(g.username)}</h4>
+        <div class="sessionGroupList">
+          ${g.sessions.map((s, i) => renderSessionCard(s, { open: hasActive ? isSessionActive(s) : i === 0 })).join('')}
+        </div>
       </section>`;
-    }
-    if (done.length) {
-      html += `<section class="sessionGroup">
-        <h4 class="sessionGroupTitle">Завершённые</h4>
-        ${done.map(s => renderSessionCard(s)).join('')}
-      </section>`;
-    }
-    sessionsEl.innerHTML = html;
+    }).join('');
   } catch (e) {
+    if (summaryEl) summaryEl.innerHTML = '';
     sessionsEl.innerHTML = '<p class="emptyHint">Не удалось загрузить активность</p>';
   }
 }
@@ -233,9 +333,37 @@ async function selectClient() {
   updateOnlineStatus();
   renderUsers();
   renderConfigPreview();
+  renderEarnSettings();
   const dateInput = document.getElementById('activityDate');
   if (!dateInput.value) dateInput.value = todayISODate();
   renderActivity();
+}
+
+function renderEarnSettings() {
+  const box = document.getElementById('earnSettings');
+  if (!box || !currentClient) return;
+  const s = currentClient.earn_settings || {};
+  const taskCount = currentClient.earn_task_count || 0;
+  box.innerHTML = `
+    <p class="configPreviewHint">Задачек в списке: <strong>${taskCount}</strong> (пока пусто — контент добавим позже)</p>
+    <p class="configPreviewHint">Страница ребёнка: <a href="/earn?client_id=${encodeURIComponent(currentClientId)}" target="_blank">/earn</a></p>
+    <label>Минут за задачу (по умолчанию)
+      <input type="number" id="earnDefaultReward" min="1" max="120" value="${s.default_reward_minutes || 5}" class="smallInput">
+    </label>
+    <label>Лимит заработка в день (мин)
+      <input type="number" id="earnMaxPerDay" min="1" max="600" value="${s.max_earn_per_day || 120}" class="smallInput">
+    </label>
+    <button type="button" id="saveEarnSettings" class="primaryBtn">Сохранить награды</button>
+  `;
+  document.getElementById('saveEarnSettings').onclick = async () => {
+    await updateEarnSettings(currentClientId, {
+      default_reward_minutes: Number(document.getElementById('earnDefaultReward').value) || 5,
+      max_earn_per_day: Number(document.getElementById('earnMaxPerDay').value) || 120
+    });
+    currentClient = await getClient(currentClientId);
+    renderEarnSettings();
+    renderUsers();
+  };
 }
 
 function formatTime(isoStr) {
@@ -301,6 +429,7 @@ function renderUsers() {
         <div>
           <span class="userName">${u.name}</span>
           <code>${u.username}</code>
+          <span class="earnBalance">баланс: ${u.earn_balance_minutes || 0} мин</span>
         </div>
         <button onclick="deleteUserConfirm('${u.id}')" class="deleteBtn">×</button>
       </div>

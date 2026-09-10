@@ -29,6 +29,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/clients/{id}/activity", h.GetActivity)
 	mux.HandleFunc("GET /api/updates/client", h.GetUpdateManifest)
 	mux.HandleFunc("GET /api/updates/aegis-client.exe", h.DownloadClientBinary)
+	h.registerEarnRoutes(mux)
 }
 
 func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
@@ -109,10 +110,11 @@ func (h *Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type userResp struct {
-		ID       string             `json:"id"`
-		Name     string             `json:"name"`
-		Username string             `json:"username"`
-		Schedule domain.DaySchedule `json:"schedule"`
+		ID                 string             `json:"id"`
+		Name               string             `json:"name"`
+		Username           string             `json:"username"`
+		Schedule           domain.DaySchedule `json:"schedule"`
+		EarnBalanceMinutes int                `json:"earn_balance_minutes"`
 	}
 	resp := struct {
 		ID                      string                        `json:"id"`
@@ -120,6 +122,8 @@ func (h *Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 		Users                   []userResp                    `json:"users"`
 		BlockRequests           []port.BlockRequest           `json:"block_requests"`
 		TemporaryAccessRequests []port.TemporaryAccessRequest `json:"temporary_access_requests"`
+		EarnTaskCount           int                           `json:"earn_task_count"`
+		EarnSettings            domain.EarnSettings           `json:"earn_settings"`
 		LastSeen                *time.Time                    `json:"last_seen,omitempty"`
 		Online                  bool                          `json:"online"`
 		ClientVersion           string                        `json:"client_version,omitempty"`
@@ -128,6 +132,11 @@ func (h *Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 		Name:                    state.Name,
 		BlockRequests:           state.BlockRequests,
 		TemporaryAccessRequests: state.TemporaryAccessRequests,
+		EarnTaskCount:           len(state.EarnTasks),
+		EarnSettings:            state.EarnSettings,
+	}
+	if resp.EarnSettings.DefaultRewardMinutes == 0 && resp.EarnSettings.MaxEarnPerDay == 0 {
+		resp.EarnSettings = domain.DefaultEarnSettings()
 	}
 	if h.presence != nil {
 		if pr, ok := h.presence.GetPresence(r.Context(), clientID); ok {
@@ -139,10 +148,11 @@ func (h *Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, u := range state.Users {
 		resp.Users = append(resp.Users, userResp{
-			ID:       u.ID,
-			Name:     u.Name,
-			Username: u.Username,
-			Schedule: u.Schedule,
+			ID:                 u.ID,
+			Name:               u.Name,
+			Username:           u.Username,
+			Schedule:           u.Schedule,
+			EarnBalanceMinutes: u.EarnBalanceMinutes,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")

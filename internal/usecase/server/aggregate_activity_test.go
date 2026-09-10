@@ -129,6 +129,7 @@ func TestAggregateDayActivity_IgnoresDuplicateLoginSameSession(t *testing.T) {
 	}
 }
 
+func TestAggregateDayActivity_LockedNow(t *testing.T) {
 	loc := time.UTC
 	day := time.Date(2026, 8, 21, 0, 0, 0, 0, loc)
 	now := time.Date(2026, 8, 21, 12, 0, 0, 0, loc)

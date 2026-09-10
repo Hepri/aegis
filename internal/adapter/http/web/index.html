@@ -33,19 +33,24 @@
         <p class="configPreviewHint">Сегодня + завтра, человекопонятный формат</p>
         <div id="configPreviewContent"></div>
       </div>
+      <h2>Пользователи</h2>
+      <ul id="userList"></ul>
+      <button id="addUser">+ Добавить пользователя</button>
+      <div id="earnSection" class="earnSection">
+        <h3>Задачки → время</h3>
+        <div id="earnSettings"></div>
+      </div>
+      <h3>Расписание</h3>
+      <div id="scheduleEditor"></div>
       <div id="activitySection" class="activitySection">
         <h2>Активность</h2>
         <div class="activityControls">
           <label>Дата: <input type="date" id="activityDate"></label>
           <button id="refreshActivity" type="button">Обновить</button>
         </div>
+        <div id="activityDaySummary" class="activityDaySummary"></div>
         <div id="activitySessions" class="activitySessions"></div>
       </div>
-      <h2>Пользователи</h2>
-      <ul id="userList"></ul>
-      <button id="addUser">+ Добавить пользователя</button>
-      <h3>Расписание</h3>
-      <div id="scheduleEditor"></div>
     </section>
   </main>
   <script src="/static/app.js"></script>

@@ -30,6 +30,8 @@ type ClientState struct {
 	Users                   []domain.User
 	BlockRequests           []BlockRequest           // last 10, persisted
 	TemporaryAccessRequests []TemporaryAccessRequest // last 10, persisted
+	EarnTasks               []domain.EarnTask        // shared task list (may be empty)
+	EarnSettings            domain.EarnSettings
 	LastSentIntervals       map[string][]domain.AllowedInterval
 	LastSentVersion         string
 	ComputedConfig          *domain.ClientConfig // precomputed intervals for today+tomorrow
@@ -69,6 +71,15 @@ type ConfigRepository interface {
 
 	// DeleteTemporaryAccessRequest removes temp access by ID
 	DeleteTemporaryAccessRequest(ctx context.Context, clientID, requestID string) error
+
+	// UpdateEarnSettings updates earn settings for a client
+	UpdateEarnSettings(ctx context.Context, clientID string, settings domain.EarnSettings) error
+
+	// AnswerEarnTask checks answer, credits wallet on success; returns (correct, newBalance, error)
+	AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (correct bool, balance int, err error)
+
+	// RedeemEarnMinutes spends wallet minutes and grants temporary access from now
+	RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error
 
 	// UpdateLastSent updates last sent intervals for change detection
 	UpdateLastSent(ctx context.Context, clientID string, intervals map[string][]domain.AllowedInterval) error

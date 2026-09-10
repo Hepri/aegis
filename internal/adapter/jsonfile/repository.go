@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,13 +37,18 @@ type persistedClient struct {
 	Users                   []persistedUser              `json:"users"`
 	BlockRequests           []persistedBlockRequest      `json:"block_requests,omitempty"`
 	TemporaryAccessRequests []persistedTempAccessRequest `json:"temporary_access_requests,omitempty"`
+	EarnTasks               []domain.EarnTask            `json:"earn_tasks,omitempty"`
+	EarnSettings            *domain.EarnSettings         `json:"earn_settings,omitempty"`
 }
 
 type persistedUser struct {
-	ID       string             `json:"id"`
-	Name     string             `json:"name"`
-	Username string             `json:"username"`
-	Schedule domain.DaySchedule `json:"schedule"`
+	ID                 string               `json:"id"`
+	Name               string               `json:"name"`
+	Username           string               `json:"username"`
+	Schedule           domain.DaySchedule   `json:"schedule"`
+	EarnBalanceMinutes int                  `json:"earn_balance_minutes,omitempty"`
+	SolvedTaskIDs      []string             `json:"solved_task_ids,omitempty"`
+	EarnDayStats       *domain.EarnDayStats `json:"earn_day_stats,omitempty"`
 }
 
 type persistedData struct {
@@ -64,6 +70,8 @@ type clientState struct {
 	Users                   []domain.User
 	BlockRequests           []port.BlockRequest
 	TemporaryAccessRequests []port.TemporaryAccessRequest
+	EarnTasks               []domain.EarnTask
+	EarnSettings            domain.EarnSettings
 	LastSentIntervals       map[string][]domain.AllowedInterval
 	LastSentVersion         string
 	ComputedConfig          *domain.ClientConfig
@@ -103,12 +111,18 @@ func (r *Repository) load() error {
 	for id, pc := range pd.Clients {
 		users := make([]domain.User, 0, len(pc.Users))
 		for _, pu := range pc.Users {
-			users = append(users, domain.User{
-				ID:       pu.ID,
-				Name:     pu.Name,
-				Username: pu.Username,
-				Schedule: pu.Schedule,
-			})
+			u := domain.User{
+				ID:                 pu.ID,
+				Name:               pu.Name,
+				Username:           pu.Username,
+				Schedule:           pu.Schedule,
+				EarnBalanceMinutes: pu.EarnBalanceMinutes,
+				SolvedTaskIDs:      append([]string(nil), pu.SolvedTaskIDs...),
+			}
+			if pu.EarnDayStats != nil {
+				u.EarnDayStats = *pu.EarnDayStats
+			}
+			users = append(users, u)
 		}
 		blockReqs := make([]port.BlockRequest, 0, len(pc.BlockRequests))
 		for _, b := range pc.BlockRequests {
@@ -126,12 +140,22 @@ func (r *Repository) load() error {
 			}
 			tempReqs = append(tempReqs, port.TemporaryAccessRequest{ID: id, UserID: t.UserID, Start: t.Start, Until: t.Until})
 		}
+		settings := domain.DefaultEarnSettings()
+		if pc.EarnSettings != nil {
+			settings = *pc.EarnSettings
+		}
+		tasks := append([]domain.EarnTask(nil), pc.EarnTasks...)
+		if tasks == nil {
+			tasks = []domain.EarnTask{}
+		}
 		r.clients[id] = &clientState{
 			ID:                      pc.ID,
 			Name:                    pc.Name,
 			Users:                   users,
 			BlockRequests:           blockReqs,
 			TemporaryAccessRequests: tempReqs,
+			EarnTasks:               tasks,
+			EarnSettings:            settings,
 		}
 	}
 	return nil
@@ -150,12 +174,19 @@ func (r *Repository) saveLocked() error {
 	for id, cs := range r.clients {
 		users := make([]persistedUser, 0, len(cs.Users))
 		for _, u := range cs.Users {
-			users = append(users, persistedUser{
-				ID:       u.ID,
-				Name:     u.Name,
-				Username: u.Username,
-				Schedule: u.Schedule,
-			})
+			pu := persistedUser{
+				ID:                 u.ID,
+				Name:               u.Name,
+				Username:           u.Username,
+				Schedule:           u.Schedule,
+				EarnBalanceMinutes: u.EarnBalanceMinutes,
+				SolvedTaskIDs:      append([]string(nil), u.SolvedTaskIDs...),
+			}
+			if u.EarnDayStats.Date != "" || u.EarnDayStats.EarnedMinutes > 0 || u.EarnDayStats.SolvedCount > 0 {
+				stats := u.EarnDayStats
+				pu.EarnDayStats = &stats
+			}
+			users = append(users, pu)
 		}
 		blockReqs := make([]persistedBlockRequest, 0, len(cs.BlockRequests))
 		for _, b := range cs.BlockRequests {
@@ -173,12 +204,15 @@ func (r *Repository) saveLocked() error {
 			}
 			tempReqs = append(tempReqs, persistedTempAccessRequest{ID: id, UserID: t.UserID, Start: t.Start, Until: t.Until})
 		}
+		settings := cs.EarnSettings
 		pd.Clients[id] = persistedClient{
 			ID:                      id,
 			Name:                    cs.Name,
 			Users:                   users,
 			BlockRequests:           blockReqs,
 			TemporaryAccessRequests: tempReqs,
+			EarnTasks:               append([]domain.EarnTask(nil), cs.EarnTasks...),
+			EarnSettings:            &settings,
 		}
 	}
 
@@ -259,6 +293,9 @@ func (r *Repository) GetClient(ctx context.Context, clientID string) (*port.Clie
 func (r *Repository) toPortState(cs *clientState) *port.ClientState {
 	users := make([]domain.User, len(cs.Users))
 	copy(users, cs.Users)
+	for i := range users {
+		users[i].SolvedTaskIDs = append([]string(nil), cs.Users[i].SolvedTaskIDs...)
+	}
 	blockReqs := make([]port.BlockRequest, len(cs.BlockRequests))
 	copy(blockReqs, cs.BlockRequests)
 	tempReqs := make([]port.TemporaryAccessRequest, len(cs.TemporaryAccessRequests))
@@ -267,12 +304,18 @@ func (r *Repository) toPortState(cs *clientState) *port.ClientState {
 	for k, v := range cs.LastSentIntervals {
 		lastSent[k] = append([]domain.AllowedInterval(nil), v...)
 	}
+	tasks := append([]domain.EarnTask(nil), cs.EarnTasks...)
+	if tasks == nil {
+		tasks = []domain.EarnTask{}
+	}
 	return &port.ClientState{
 		ID:                      cs.ID,
 		Name:                    cs.Name,
 		Users:                   users,
 		BlockRequests:           blockReqs,
 		TemporaryAccessRequests: tempReqs,
+		EarnTasks:               tasks,
+		EarnSettings:            cs.EarnSettings,
 		LastSentIntervals:       lastSent,
 		LastSentVersion:         cs.LastSentVersion,
 		ComputedConfig:          cs.ComputedConfig,
@@ -307,9 +350,17 @@ func (r *Repository) SaveClient(ctx context.Context, client *port.ClientState) e
 		Users:                   append([]domain.User(nil), client.Users...),
 		BlockRequests:           append([]port.BlockRequest(nil), client.BlockRequests...),
 		TemporaryAccessRequests: append([]port.TemporaryAccessRequest(nil), client.TemporaryAccessRequests...),
+		EarnTasks:               append([]domain.EarnTask(nil), client.EarnTasks...),
+		EarnSettings:            client.EarnSettings,
 		LastSentIntervals:       client.LastSentIntervals,
 		LastSentVersion:         client.LastSentVersion,
 		ComputedConfig:          &config,
+	}
+	if cs.EarnSettings.DefaultRewardMinutes == 0 && cs.EarnSettings.MaxEarnPerDay == 0 {
+		cs.EarnSettings = domain.DefaultEarnSettings()
+	}
+	if cs.EarnTasks == nil {
+		cs.EarnTasks = []domain.EarnTask{}
 	}
 	r.clients[client.ID] = cs
 	return r.saveLocked()
@@ -483,6 +534,125 @@ func (r *Repository) DeleteTemporaryAccessRequest(ctx context.Context, clientID,
 		}
 	}
 	return nil
+}
+
+func (r *Repository) UpdateEarnSettings(ctx context.Context, clientID string, settings domain.EarnSettings) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cs, ok := r.clients[clientID]
+	if !ok {
+		return domain.ErrClientNotFound
+	}
+	cs.EarnSettings = settings
+	return r.saveLocked()
+}
+
+func (r *Repository) AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (bool, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cs, ok := r.clients[clientID]
+	if !ok {
+		return false, 0, domain.ErrClientNotFound
+	}
+	var task *domain.EarnTask
+	for i := range cs.EarnTasks {
+		if cs.EarnTasks[i].ID == taskID {
+			task = &cs.EarnTasks[i]
+			break
+		}
+	}
+	if task == nil || !task.Enabled {
+		return false, 0, domain.ErrTaskNotFound
+	}
+	userIdx := -1
+	for i := range cs.Users {
+		if cs.Users[i].ID == userID {
+			userIdx = i
+			break
+		}
+	}
+	if userIdx < 0 {
+		return false, 0, domain.ErrUserNotFound
+	}
+	u := &cs.Users[userIdx]
+	for _, id := range u.SolvedTaskIDs {
+		if id == taskID {
+			return false, u.EarnBalanceMinutes, domain.ErrTaskAlreadySolved
+		}
+	}
+	if !answersMatch(task.Answer, answer) {
+		return false, u.EarnBalanceMinutes, nil
+	}
+
+	today := r.now().Format("2006-01-02")
+	if u.EarnDayStats.Date != today {
+		u.EarnDayStats = domain.EarnDayStats{Date: today}
+	}
+	reward := domain.EffectiveReward(*task, cs.EarnSettings)
+	maxDay := cs.EarnSettings.MaxEarnPerDay
+	if maxDay <= 0 {
+		maxDay = domain.DefaultEarnSettings().MaxEarnPerDay
+	}
+	if u.EarnDayStats.EarnedMinutes+reward > maxDay {
+		return false, u.EarnBalanceMinutes, domain.ErrDailyLimit
+	}
+
+	u.EarnBalanceMinutes += reward
+	u.EarnDayStats.EarnedMinutes += reward
+	u.EarnDayStats.SolvedCount++
+	u.SolvedTaskIDs = append(u.SolvedTaskIDs, taskID)
+	if err := r.saveLocked(); err != nil {
+		return false, 0, err
+	}
+	return true, u.EarnBalanceMinutes, nil
+}
+
+func (r *Repository) RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if minutes <= 0 {
+		return domain.ErrInvalidMinutes
+	}
+	cs, ok := r.clients[clientID]
+	if !ok {
+		return domain.ErrClientNotFound
+	}
+	userIdx := -1
+	for i := range cs.Users {
+		if cs.Users[i].ID == userID {
+			userIdx = i
+			break
+		}
+	}
+	if userIdx < 0 {
+		return domain.ErrUserNotFound
+	}
+	u := &cs.Users[userIdx]
+	if u.EarnBalanceMinutes < minutes {
+		return domain.ErrInsufficientBalance
+	}
+	u.EarnBalanceMinutes -= minutes
+	now := r.now()
+	until := now.Add(time.Duration(minutes) * time.Minute)
+	cs.TemporaryAccessRequests = append(cs.TemporaryAccessRequests, port.TemporaryAccessRequest{
+		ID:     uuid.New().String(),
+		UserID: userID,
+		Start:  now,
+		Until:  until,
+	})
+	if len(cs.TemporaryAccessRequests) > maxRequests {
+		cs.TemporaryAccessRequests = cs.TemporaryAccessRequests[len(cs.TemporaryAccessRequests)-maxRequests:]
+	}
+	cs.LastSentVersion = uuid.New().String()
+	state := r.toPortState(cs)
+	config, _ := server.ComputeClientConfig(r.now(), state, true)
+	cs.ComputedConfig = &config
+	r.notify(clientID)
+	return r.saveLocked()
+}
+
+func answersMatch(expected, got string) bool {
+	return strings.EqualFold(strings.TrimSpace(expected), strings.TrimSpace(got))
 }
 
 func (r *Repository) UpdateLastSent(ctx context.Context, clientID string, intervals map[string][]domain.AllowedInterval) error {

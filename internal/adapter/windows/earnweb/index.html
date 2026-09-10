@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis — Задачки</title>
+  <link rel="stylesheet" href="earn.css">
+</head>
+<body>
+  <main class="earn">
+    <header>
+      <h1>Задачки</h1>
+      <p id="clientName" class="muted"></p>
+    </header>
+
+    <section id="userPick" class="card" hidden>
+      <h2>Кто ты?</h2>
+      <div id="userButtons" class="btnRow"></div>
+    </section>
+
+    <section id="mainPanel" class="card" hidden>
+      <div class="balanceRow">
+        <span>Баланс</span>
+        <strong id="balance">0</strong>
+        <span>мин</span>
+      </div>
+
+      <div id="taskBox">
+        <p id="emptyTasks" class="muted" hidden>Пока нет задачек</p>
+        <div id="taskContent" hidden>
+          <p id="taskPrompt" class="prompt"></p>
+          <p class="reward muted">Награда: <span id="taskReward">0</span> мин</p>
+          <form id="answerForm">
+            <input id="answerInput" type="text" autocomplete="off" placeholder="Ответ" required>
+            <button type="submit">Ответить</button>
+          </form>
+          <p id="answerFeedback" class="feedback" hidden></p>
+        </div>
+      </div>
+
+      <div class="redeem">
+        <h2>Купить время</h2>
+        <div id="redeemButtons" class="btnRow"></div>
+        <p id="redeemMsg" class="feedback" hidden></p>
+      </div>
+    </section>
+  </main>
+  <script src="earn.js"></script>
+</body>
+</html>

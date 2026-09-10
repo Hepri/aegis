@@ -49,6 +49,15 @@ func (m *mockRepo) DeleteBlockRequest(ctx context.Context, clientID, requestID s
 func (m *mockRepo) DeleteTemporaryAccessRequest(ctx context.Context, clientID, requestID string) error {
 	return nil
 }
+func (m *mockRepo) UpdateEarnSettings(ctx context.Context, clientID string, settings domain.EarnSettings) error {
+	return nil
+}
+func (m *mockRepo) AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (bool, int, error) {
+	return false, 0, nil
+}
+func (m *mockRepo) RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error {
+	return nil
+}
 func (m *mockRepo) UpdateLastSent(ctx context.Context, clientID string, intervals map[string][]domain.AllowedInterval) error {
 	return nil
 }
