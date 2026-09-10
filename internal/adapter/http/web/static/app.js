@@ -344,22 +344,58 @@ function renderEarnSettings() {
   if (!box || !currentClient) return;
   const s = currentClient.earn_settings || {};
   const taskCount = currentClient.earn_task_count || 0;
+  const earnURL = `${location.origin}/earn?client_id=${encodeURIComponent(currentClientId)}`;
   box.innerHTML = `
-    <p class="configPreviewHint">Задачек в списке: <strong>${taskCount}</strong> (пока пусто — контент добавим позже)</p>
-    <p class="configPreviewHint">Страница ребёнка: <a href="/earn?client_id=${encodeURIComponent(currentClientId)}" target="_blank">/earn</a></p>
-    <label>Минут за задачу (по умолчанию)
-      <input type="number" id="earnDefaultReward" min="1" max="120" value="${s.default_reward_minutes || 5}" class="smallInput">
+    <p class="configPreviewHint">Банк задачек: <strong>${taskCount}</strong> · генератор математики включён по умолчанию</p>
+    <p class="configPreviewHint">Ребёнок / отладка из LAN: <a href="${earnURL}" target="_blank" rel="noopener">${earnURL}</a></p>
+    <p class="configPreviewHint">Без client_id тоже работает: <a href="${location.origin}/earn" target="_blank" rel="noopener">${location.origin}/earn</a> (выбор ПК)</p>
+    <label>Минут за задачу
+      <input type="number" id="earnDefaultReward" min="1" max="120" value="${s.default_reward_minutes || 1}" class="smallInput">
     </label>
     <label>Лимит заработка в день (мин)
       <input type="number" id="earnMaxPerDay" min="1" max="600" value="${s.max_earn_per_day || 120}" class="smallInput">
     </label>
-    <button type="button" id="saveEarnSettings" class="primaryBtn">Сохранить награды</button>
+    <label>Блокировка после ошибки (сек)
+      <input type="number" id="earnWrongLock" min="1" max="600" value="${s.wrong_lock_seconds || 15}" class="smallInput">
+    </label>
+    <label>Ошибок подряд → штраф и новая задача
+      <input type="number" id="earnWrongStreak" min="1" max="20" value="${s.wrong_streak_limit || 3}" class="smallInput">
+    </label>
+    <label>Штраф (мин с баланса)
+      <input type="number" id="earnWrongPenalty" min="0" max="60" value="${s.wrong_streak_penalty_minutes ?? 1}" class="smallInput">
+    </label>
+    <label class="checkboxLabel"><input type="checkbox" id="earnMathGen" ${s.math_generator_enabled !== false ? 'checked' : ''}> Генератор математики (3 класс)</label>
+    <div class="earnActions">
+      <button type="button" id="saveEarnSettings" class="primaryBtn">Сохранить награды</button>
+      <button type="button" id="clearEarnBalances" class="dangerBtn">Стереть накопленное время</button>
+    </div>
   `;
   document.getElementById('saveEarnSettings').onclick = async () => {
     await updateEarnSettings(currentClientId, {
-      default_reward_minutes: Number(document.getElementById('earnDefaultReward').value) || 5,
-      max_earn_per_day: Number(document.getElementById('earnMaxPerDay').value) || 120
+      default_reward_minutes: Number(document.getElementById('earnDefaultReward').value) || 1,
+      max_earn_per_day: Number(document.getElementById('earnMaxPerDay').value) || 120,
+      wrong_lock_seconds: Number(document.getElementById('earnWrongLock').value) || 15,
+      wrong_streak_limit: Number(document.getElementById('earnWrongStreak').value) || 3,
+      wrong_streak_penalty_minutes: Number(document.getElementById('earnWrongPenalty').value) || 0,
+      math_generator_enabled: document.getElementById('earnMathGen').checked
     });
+    currentClient = await getClient(currentClientId);
+    renderEarnSettings();
+    renderUsers();
+  };
+  document.getElementById('clearEarnBalances').onclick = async () => {
+    const users = currentClient.users || [];
+    const total = users.reduce((sum, u) => sum + (u.earn_balance_minutes || 0), 0);
+    const names = users.map((u) => `${u.name}: ${u.earn_balance_minutes || 0} мин`).join('\n');
+    const msg = total === 0
+      ? 'Балансы уже нулевые. Всё равно сбросить?'
+      : `Стереть всё накопленное время (${total} мин)?\n\n${names}\n\nЭто нельзя отменить.`;
+    if (!confirm(msg)) return;
+    const res = await fetch(`${API}/clients/${currentClientId}/earn-balances/clear`, { method: 'POST' });
+    if (!res.ok) {
+      alert(await res.text() || 'Не удалось сбросить');
+      return;
+    }
     currentClient = await getClient(currentClientId);
     renderEarnSettings();
     renderUsers();

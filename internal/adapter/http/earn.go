@@ -16,6 +16,7 @@ func (h *Handler) registerEarnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/earn/answer", h.EarnAnswer)
 	mux.HandleFunc("POST /api/earn/redeem", h.EarnRedeem)
 	mux.HandleFunc("PUT /api/clients/{id}/earn-settings", h.UpdateEarnSettings)
+	mux.HandleFunc("POST /api/clients/{id}/earn-balances/clear", h.ClearEarnBalances)
 }
 
 func (h *Handler) ServeEarnPage(w http.ResponseWriter, r *http.Request) {
@@ -44,10 +45,7 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	settings := state.EarnSettings
-	if settings.DefaultRewardMinutes == 0 && settings.MaxEarnPerDay == 0 {
-		settings = domain.DefaultEarnSettings()
-	}
+	settings := domain.ResolveEarnSettings(state.EarnSettings)
 
 	type userInfo struct {
 		ID             string `json:"id"`
@@ -55,8 +53,11 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 		BalanceMinutes int    `json:"balance_minutes"`
 		AvailableTasks int    `json:"available_tasks"`
 		EarnedToday    int    `json:"earned_today"`
+		LockSeconds    int    `json:"lock_seconds,omitempty"`
+		WrongCount     int    `json:"wrong_count,omitempty"`
 	}
 
+	nowUnix := time.Now().In(h.loc).Unix()
 	today := time.Now().In(h.loc).Format("2006-01-02")
 	users := make([]userInfo, 0, len(state.Users))
 	var selected *userInfo
@@ -71,9 +72,20 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 				available++
 			}
 		}
+		if settings.MathGeneratorEnabled {
+			available++ // at least generator
+		}
 		earnedToday := 0
 		if u.EarnDayStats.Date == today {
 			earnedToday = u.EarnDayStats.EarnedMinutes
+		}
+		lockSec := 0
+		if u.EarnLockedUntil > nowUnix {
+			lockSec = int(u.EarnLockedUntil - nowUnix)
+		}
+		wrong := 0
+		if u.ActiveEarnChallenge != nil {
+			wrong = u.ActiveEarnChallenge.WrongCount
 		}
 		info := userInfo{
 			ID:             u.ID,
@@ -81,6 +93,8 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 			BalanceMinutes: u.EarnBalanceMinutes,
 			AvailableTasks: available,
 			EarnedToday:    earnedToday,
+			LockSeconds:    lockSec,
+			WrongCount:     wrong,
 		}
 		users = append(users, info)
 		if userID != "" && u.ID == userID {
@@ -122,44 +136,31 @@ func (h *Handler) EarnNext(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "client_id and user_id required", http.StatusBadRequest)
 		return
 	}
-	state, err := h.repo.GetClient(r.Context(), clientID)
+	task, lockSec, err := h.repo.IssueEarnChallenge(r.Context(), clientID, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if state == nil {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	var user *domain.User
-	for i := range state.Users {
-		if state.Users[i].ID == userID {
-			user = &state.Users[i]
-			break
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrUserNotFound):
+			status = http.StatusNotFound
 		}
-	}
-	if user == nil {
-		http.Error(w, "user not found", http.StatusNotFound)
-		return
-	}
-	solved := map[string]bool{}
-	for _, id := range user.SolvedTaskIDs {
-		solved[id] = true
-	}
-	for _, t := range state.EarnTasks {
-		if !t.Enabled || solved[t.ID] {
-			continue
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"id":             t.ID,
-			"prompt":         t.Prompt,
-			"reward_minutes": domain.EffectiveReward(t, state.EarnSettings),
-		})
+		http.Error(w, err.Error(), status)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"empty": true})
+	if task == nil {
+		json.NewEncoder(w).Encode(map[string]any{"empty": true, "lock_seconds": lockSec})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"id":             task.ID,
+		"prompt":         task.Prompt,
+		"kind":           task.Kind,
+		"choices":        task.Choices,
+		"reward_minutes": task.RewardMinutes,
+		"source":         task.Source,
+		"wrong_count":    task.WrongCount,
+		"lock_seconds":   lockSec,
+	})
 }
 
 func (h *Handler) EarnAnswer(w http.ResponseWriter, r *http.Request) {
@@ -177,8 +178,14 @@ func (h *Handler) EarnAnswer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "client_id, user_id, task_id required", http.StatusBadRequest)
 		return
 	}
-	correct, balance, err := h.repo.AnswerEarnTask(r.Context(), req.ClientID, req.UserID, req.TaskID, req.Answer)
+	result, err := h.repo.AnswerEarnTask(r.Context(), req.ClientID, req.UserID, req.TaskID, req.Answer)
 	if err != nil {
+		if errors.Is(err, domain.ErrEarnLocked) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusLocked)
+			json.NewEncoder(w).Encode(result)
+			return
+		}
 		status := http.StatusBadRequest
 		switch {
 		case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrUserNotFound), errors.Is(err, domain.ErrTaskNotFound):
@@ -190,10 +197,7 @@ func (h *Handler) EarnAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"correct":         correct,
-		"balance_minutes": balance,
-	})
+	json.NewEncoder(w).Encode(result)
 }
 
 func (h *Handler) EarnRedeem(w http.ResponseWriter, r *http.Request) {
@@ -243,16 +247,14 @@ func (h *Handler) UpdateEarnSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.DefaultRewardMinutes < 0 || req.MaxEarnPerDay < 0 {
+	if req.DefaultRewardMinutes < 0 || req.MaxEarnPerDay < 0 || req.WrongLockSeconds < 0 ||
+		req.WrongStreakLimit < 0 || req.WrongStreakPenaltyMinutes < 0 {
 		http.Error(w, "values must be non-negative", http.StatusBadRequest)
 		return
 	}
-	if req.DefaultRewardMinutes == 0 {
-		req.DefaultRewardMinutes = domain.DefaultEarnSettings().DefaultRewardMinutes
-	}
-	if req.MaxEarnPerDay == 0 {
-		req.MaxEarnPerDay = domain.DefaultEarnSettings().MaxEarnPerDay
-	}
+	gen := req.MathGeneratorEnabled
+	req = domain.NormalizeEarnSettings(req)
+	req.MathGeneratorEnabled = gen
 	if err := h.repo.UpdateEarnSettings(r.Context(), clientID, req); err != nil {
 		if errors.Is(err, domain.ErrClientNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -262,4 +264,18 @@ func (h *Handler) UpdateEarnSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) ClearEarnBalances(w http.ResponseWriter, r *http.Request) {
+	clientID := r.PathValue("id")
+	if err := h.repo.ClearEarnBalances(r.Context(), clientID); err != nil {
+		if errors.Is(err, domain.ErrClientNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }

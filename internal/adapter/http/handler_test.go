@@ -52,10 +52,16 @@ func (m *mockRepo) DeleteTemporaryAccessRequest(ctx context.Context, clientID, r
 func (m *mockRepo) UpdateEarnSettings(ctx context.Context, clientID string, settings domain.EarnSettings) error {
 	return nil
 }
-func (m *mockRepo) AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (bool, int, error) {
-	return false, 0, nil
+func (m *mockRepo) IssueEarnChallenge(ctx context.Context, clientID, userID string) (*domain.EarnPublicTask, int, error) {
+	return nil, 0, nil
+}
+func (m *mockRepo) AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (domain.EarnAnswerResult, error) {
+	return domain.EarnAnswerResult{}, nil
 }
 func (m *mockRepo) RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error {
+	return nil
+}
+func (m *mockRepo) ClearEarnBalances(ctx context.Context, clientID string) error {
 	return nil
 }
 func (m *mockRepo) UpdateLastSent(ctx context.Context, clientID string, intervals map[string][]domain.AllowedInterval) error {

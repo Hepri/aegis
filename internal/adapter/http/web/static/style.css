@@ -92,6 +92,17 @@ li {
   display: block;
   margin: 0.5rem 0;
 }
+.earnSection .checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.earnActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
 .earnSection a { color: #7eb8ff; }
 
 .userTempAccess {

@@ -1,35 +1,69 @@
 const params = new URLSearchParams(location.search);
 let clientId = params.get('client_id') || '';
 let userId = params.get('user_id') || '';
-let exitUrl = params.get('exit_url') || '';
+let exitUrl = params.get('exit_url') || 'http://127.0.0.1:17855/exit';
 let balance = 0;
 let currentTask = null;
+let earnSettings = {};
+let lockTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
-if (exitUrl) {
-  const btn = $('exitBtn');
-  btn.hidden = false;
-  btn.onclick = async () => {
+function setQuery(extra) {
+  const q = new URLSearchParams(location.search);
+  if (clientId) q.set('client_id', clientId); else q.delete('client_id');
+  if (userId) q.set('user_id', userId); else q.delete('user_id');
+  if (exitUrl) q.set('exit_url', exitUrl);
+  Object.entries(extra || {}).forEach(([k, v]) => {
+    if (v == null || v === '') q.delete(k);
+    else q.set(k, v);
+  });
+  const next = `${location.pathname}?${q}`;
+  history.replaceState(null, '', next);
+}
+
+async function doExit() {
+  const buttons = [$('exitBtn'), $('exitBtnBottom')].filter(Boolean);
+  buttons.forEach((btn) => {
     btn.disabled = true;
     btn.textContent = 'Выход…';
+  });
+  try {
+    await fetch(exitUrl, { method: 'POST', mode: 'cors' });
+  } catch (_) {
     try {
-      await fetch(exitUrl, { method: 'POST', mode: 'cors' });
-    } catch (_) {
-      try { location.href = exitUrl; } catch (__) {}
+      await fetch('http://127.0.0.1:17855/exit', { method: 'POST', mode: 'cors' });
+    } catch (__) {
+      try { location.href = exitUrl; } catch (___) {}
+      buttons.forEach((btn) => {
+        btn.disabled = false;
+        btn.textContent = btn.id === 'exitBtnBottom' ? 'Выйти из Задачек' : 'Выйти';
+      });
+      alert('Выход доступен только на ПК в аккаунте «Задачки».');
     }
-  };
+  }
 }
+
+$('exitBtn').onclick = doExit;
+if ($('exitBtnBottom')) $('exitBtnBottom').onclick = doExit;
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || res.statusText);
-  }
   const ct = res.headers.get('content-type') || '';
-  if (ct.includes('application/json')) return res.json();
-  return null;
+  const isJSON = ct.includes('application/json');
+  const body = isJSON ? await res.json() : await res.text();
+  if (!res.ok) {
+    if (isJSON && body && typeof body === 'object') {
+      const err = new Error(body.message || res.statusText || 'error');
+      err.status = res.status;
+      err.payload = body;
+      throw err;
+    }
+    const err = new Error(typeof body === 'string' ? body : res.statusText);
+    err.status = res.status;
+    throw err;
+  }
+  return isJSON ? body : null;
 }
 
 function setBalance(n) {
@@ -47,19 +81,122 @@ function showFeedback(el, ok, msg) {
   el.textContent = msg;
 }
 
+function streakMax() {
+  return Number(earnSettings.wrong_streak_limit) || 3;
+}
+
+function updateWrongUI(count) {
+  $('wrongCount').textContent = String(count || 0);
+  $('wrongMax').textContent = String(streakMax());
+}
+
+function clearLockTimer() {
+  if (lockTimer) {
+    clearInterval(lockTimer);
+    lockTimer = null;
+  }
+}
+
+function setAnswerEnabled(on) {
+  $('answerBtn').disabled = !on;
+  $('answerInput').disabled = !on;
+  $('choiceButtons').querySelectorAll('button').forEach((b) => { b.disabled = !on; });
+}
+
+function startLock(seconds, hint) {
+  const sec = Math.max(0, Math.ceil(Number(seconds) || 0));
+  if (sec <= 0) {
+    $('lockBanner').hidden = true;
+    setAnswerEnabled(true);
+    return;
+  }
+  clearLockTimer();
+  $('lockBanner').hidden = false;
+  $('lockHint').textContent = hint || 'Подожди';
+  let left = sec;
+  $('lockSeconds').textContent = String(left);
+  setAnswerEnabled(false);
+  lockTimer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearLockTimer();
+      $('lockBanner').hidden = true;
+      setAnswerEnabled(true);
+      return;
+    }
+    $('lockSeconds').textContent = String(left);
+  }, 1000);
+}
+
+function renderChoices(choices) {
+  const box = $('choiceButtons');
+  const input = $('answerInput');
+  if (choices && choices.length) {
+    box.hidden = false;
+    input.hidden = true;
+    input.required = false;
+    box.innerHTML = choices.map((c) =>
+      `<button type="button" class="choiceBtn" data-choice="${String(c).replace(/"/g, '&quot;')}">${c}</button>`
+    ).join('');
+    box.onclick = (e) => {
+      const btn = e.target.closest('[data-choice]');
+      if (!btn || btn.disabled) return;
+      submitAnswer(btn.dataset.choice);
+    };
+  } else {
+    box.hidden = true;
+    box.innerHTML = '';
+    input.hidden = false;
+    input.required = true;
+  }
+}
+
+async function pickClient() {
+  $('clientPick').hidden = false;
+  $('userPick').hidden = true;
+  $('mainPanel').hidden = true;
+  const clients = await api('/api/clients');
+  const list = Array.isArray(clients) ? clients : [];
+  if (list.length === 0) {
+    $('clientButtons').innerHTML = '<p class="muted">Нет клиентов — сначала добавь компьютер в админке</p>';
+    return;
+  }
+  if (list.length === 1) {
+    clientId = list[0].id;
+    setQuery();
+    $('clientPick').hidden = true;
+    await loadState();
+    return;
+  }
+  $('clientButtons').innerHTML = list.map((c) =>
+    `<button type="button" class="userBtn" data-cid="${c.id}">${c.name || c.id}</button>`
+  ).join('');
+  $('clientButtons').onclick = async (e) => {
+    const btn = e.target.closest('[data-cid]');
+    if (!btn) return;
+    clientId = btn.dataset.cid;
+    setQuery();
+    $('clientPick').hidden = true;
+    await loadState();
+  };
+}
+
 async function loadState() {
   if (!clientId) {
-    $('clientName').textContent = 'Укажите client_id в адресе';
+    $('clientName').textContent = 'Локальная отладка';
+    await pickClient();
     return;
   }
   const q = new URLSearchParams({ client_id: clientId });
   if (userId) q.set('user_id', userId);
   const state = await api(`/api/earn/state?${q}`);
-  $('clientName').textContent = state.client_name || '';
+  earnSettings = state.earn_settings || {};
+  $('clientName').textContent = state.client_name || clientId;
 
   if (!userId) {
     if ((state.users || []).length === 1) {
       userId = state.users[0].id;
+      setQuery();
     } else {
       $('userPick').hidden = false;
       $('userButtons').innerHTML = (state.users || []).map((u) =>
@@ -69,6 +206,7 @@ async function loadState() {
         const btn = e.target.closest('[data-uid]');
         if (!btn) return;
         userId = btn.dataset.uid;
+        setQuery();
         $('userPick').hidden = true;
         bootUser(state);
       };
@@ -82,6 +220,7 @@ function bootUser(state) {
   $('mainPanel').hidden = false;
   const u = (state.users || []).find((x) => x.id === userId) || state.user;
   setBalance(u ? u.balance_minutes : 0);
+  updateWrongUI(u ? u.wrong_count : 0);
 
   const opts = state.redeem_options || [5, 15, 30];
   $('redeemButtons').innerHTML = opts.map((m) =>
@@ -104,6 +243,9 @@ function bootUser(state) {
     }
   };
 
+  if (u && u.lock_seconds > 0) {
+    startLock(u.lock_seconds);
+  }
   loadNextTask();
 }
 
@@ -121,14 +263,21 @@ async function loadNextTask() {
   $('taskContent').hidden = false;
   $('taskPrompt').textContent = task.prompt;
   $('taskReward').textContent = String(task.reward_minutes);
+  updateWrongUI(task.wrong_count || 0);
   $('answerInput').value = '';
-  $('answerInput').focus();
+  renderChoices(task.choices);
+  if (task.lock_seconds > 0) {
+    startLock(task.lock_seconds);
+  } else {
+    setAnswerEnabled(true);
+    if (!task.choices || !task.choices.length) $('answerInput').focus();
+  }
 }
 
-$('answerForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
+async function submitAnswer(answer) {
   if (!currentTask) return;
-  const answer = $('answerInput').value;
+  const text = String(answer ?? '').trim();
+  if (!text) return;
   try {
     const res = await api('/api/earn/answer', {
       method: 'POST',
@@ -137,19 +286,45 @@ $('answerForm').addEventListener('submit', async (e) => {
         client_id: clientId,
         user_id: userId,
         task_id: currentTask.id,
-        answer
+        answer: text
       })
     });
     setBalance(res.balance_minutes);
+    updateWrongUI(res.wrong_count);
     if (res.correct) {
-      showFeedback($('answerFeedback'), true, 'Верно!');
-      setTimeout(loadNextTask, 600);
-    } else {
-      showFeedback($('answerFeedback'), false, 'Неверно, попробуй ещё');
+      showFeedback($('answerFeedback'), true, `Верно! +${res.reward_minutes || 0} мин`);
+      setTimeout(loadNextTask, 500);
+      return;
+    }
+    let msg = 'Неверно';
+    if (res.replace_question) {
+      msg = `Слишком много ошибок (−${res.penalty_minutes || 0} мин). Новая задачка.`;
+    } else if (res.wrong_count && res.wrong_streak_max) {
+      msg = `Неверно (${res.wrong_count}/${res.wrong_streak_max})`;
+    }
+    showFeedback($('answerFeedback'), false, msg);
+    if (res.lock_seconds > 0) {
+      startLock(res.lock_seconds, res.replace_question ? 'Новая задачка через' : 'Подожди');
+    }
+    if (res.replace_question) {
+      setTimeout(loadNextTask, (res.lock_seconds || 0) * 1000 + 50);
     }
   } catch (err) {
+    if (err.status === 423 && err.payload) {
+      setBalance(err.payload.balance_minutes);
+      updateWrongUI(err.payload.wrong_count);
+      startLock(err.payload.lock_seconds || 0);
+      showFeedback($('answerFeedback'), false, 'Ещё рано отвечать');
+      return;
+    }
     showFeedback($('answerFeedback'), false, err.message || 'Ошибка');
   }
+}
+
+$('answerForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!currentTask) return;
+  await submitAnswer($('answerInput').value);
 });
 
 loadState().catch((err) => {

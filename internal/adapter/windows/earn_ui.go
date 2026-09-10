@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,47 +23,55 @@ var (
 
 const ewxLogoff = 0x00000000
 
+const (
+	// EarnExitListenAddr is a fixed loopback port so /earn can log off
+	// without relying on exit_url in the Edge query string.
+	EarnExitListenAddr = "127.0.0.1:17855"
+	EarnExitURL        = "http://127.0.0.1:17855/exit"
+)
+
 // RunEarnKiosk opens Edge on the server /earn page and serves a local /exit
 // endpoint so the web UI can log off the Задачки session.
 func RunEarnKiosk(serverURL, clientID string) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", EarnExitListenAddr)
 	if err != nil {
-		log.Fatalf("earn exit listen: %v", err)
-	}
-	exitPort := ln.Addr().(*net.TCPAddr).Port
-	exitURL := "http://127.0.0.1:" + strconv.Itoa(exitPort) + "/exit"
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/exit", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("ok"))
+		// Port busy (previous instance): still open Edge; page uses the fixed URL.
+		log.Printf("earn exit listen %s: %v (continuing)", EarnExitListenAddr, err)
+	} else {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/exit", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+			go func() {
+				time.Sleep(300 * time.Millisecond)
+				if err := logoffCurrentSession(); err != nil {
+					log.Printf("logoff: %v", err)
+				}
+			}()
+		})
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("aegis-earn-exit"))
+		})
 		go func() {
-			time.Sleep(300 * time.Millisecond)
-			if err := logoffCurrentSession(); err != nil {
-				log.Printf("logoff: %v", err)
+			if err := http.Serve(ln, mux); err != nil {
+				log.Printf("earn exit server: %v", err)
 			}
 		}()
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("aegis-earn-exit"))
-	})
-	go func() {
-		if err := http.Serve(ln, mux); err != nil {
-			log.Printf("earn exit server: %v", err)
-		}
-	}()
+		log.Printf("Earn exit endpoint %s", EarnExitURL)
+	}
 
 	earnURL := strings.TrimRight(serverURL, "/") + "/earn?client_id=" + url.QueryEscape(clientID) +
-		"&exit_url=" + url.QueryEscape(exitURL)
-	log.Printf("Earn kiosk opening %s (exit=%s)", earnURL, exitURL)
+		"&exit_url=" + url.QueryEscape(EarnExitURL)
+	log.Printf("Earn kiosk opening %s", earnURL)
 
 	edge := edgePath()
 	for {

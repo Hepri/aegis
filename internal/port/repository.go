@@ -75,11 +75,17 @@ type ConfigRepository interface {
 	// UpdateEarnSettings updates earn settings for a client
 	UpdateEarnSettings(ctx context.Context, clientID string, settings domain.EarnSettings) error
 
-	// AnswerEarnTask checks answer, credits wallet on success; returns (correct, newBalance, error)
-	AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (correct bool, balance int, err error)
+	// IssueEarnChallenge returns next public task (bank or generated math).
+	IssueEarnChallenge(ctx context.Context, clientID, userID string) (*domain.EarnPublicTask, int, error) // task, lockRemainingSec, err
+
+	// AnswerEarnTask checks answer, credits wallet or applies wrong-answer lock.
+	AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (domain.EarnAnswerResult, error)
 
 	// RedeemEarnMinutes spends wallet minutes and grants temporary access from now
 	RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error
+
+	// ClearEarnBalances zeroes earn wallet balances for all users on a client.
+	ClearEarnBalances(ctx context.Context, clientID string) error
 
 	// UpdateLastSent updates last sent intervals for change detection
 	UpdateLastSent(ctx context.Context, clientID string, intervals map[string][]domain.AllowedInterval) error

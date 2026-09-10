@@ -137,6 +137,8 @@ func (h *Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 	}
 	if resp.EarnSettings.DefaultRewardMinutes == 0 && resp.EarnSettings.MaxEarnPerDay == 0 {
 		resp.EarnSettings = domain.DefaultEarnSettings()
+	} else {
+		resp.EarnSettings = domain.ResolveEarnSettings(resp.EarnSettings)
 	}
 	if h.presence != nil {
 		if pr, ok := h.presence.GetPresence(r.Context(), clientID); ok {

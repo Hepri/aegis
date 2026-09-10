@@ -11,8 +11,14 @@
     <header>
       <h1>Задачки</h1>
       <p id="clientName" class="muted"></p>
-      <button type="button" id="exitBtn" class="exitBtn" hidden>Выйти</button>
+      <button type="button" id="exitBtn" class="exitBtn">Выйти</button>
     </header>
+
+    <section id="clientPick" class="card" hidden>
+      <h2>Выбери компьютер</h2>
+      <p class="muted small">Отладка из локальной сети — тот же экран, что у ребёнка</p>
+      <div id="clientButtons" class="btnRow"></div>
+    </section>
 
     <section id="userPick" class="card" hidden>
       <h2>Кто ты?</h2>
@@ -30,11 +36,17 @@
         <p id="emptyTasks" class="muted" hidden>Пока нет задачек</p>
         <div id="taskContent" hidden>
           <p id="taskPrompt" class="prompt"></p>
-          <p class="reward muted">Награда: <span id="taskReward">0</span> мин</p>
+          <p class="reward muted">Награда: <span id="taskReward">0</span> мин · ошибок: <span id="wrongCount">0</span>/<span id="wrongMax">3</span></p>
           <form id="answerForm">
-            <input id="answerInput" type="text" autocomplete="off" placeholder="Ответ" required>
-            <button type="submit">Ответить</button>
+            <div id="choiceButtons" class="choiceRow" hidden></div>
+            <input id="answerInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Ответ">
+            <button type="submit" id="answerBtn">Ответить</button>
           </form>
+          <div id="lockBanner" class="lockBanner" hidden>
+            <span id="lockHint">Подожди</span>
+            <strong id="lockSeconds">15</strong>
+            <span>с</span>
+          </div>
           <p id="answerFeedback" class="feedback" hidden></p>
         </div>
       </div>
@@ -44,8 +56,11 @@
         <div id="redeemButtons" class="btnRow"></div>
         <p id="redeemMsg" class="feedback" hidden></p>
       </div>
+
+      <button type="button" id="exitBtnBottom" class="exitBtn exitBtnBottom">Выйти из Задачек</button>
     </section>
   </main>
+
   <script src="/earn/earn.js"></script>
 </body>
 </html>
