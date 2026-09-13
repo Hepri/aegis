@@ -35,6 +35,7 @@
       <div id="taskBox">
         <p id="emptyTasks" class="muted" hidden>Пока нет задачек</p>
         <div id="taskContent" hidden>
+          <p id="taskSubject" class="subjectTag"></p>
           <p id="taskPrompt" class="prompt"></p>
           <p class="reward muted">Награда: <span id="taskReward">0</span> мин · ошибок: <span id="wrongCount">0</span>/<span id="wrongMax">3</span></p>
           <form id="answerForm">
@@ -42,6 +43,7 @@
             <input id="answerInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Ответ">
             <button type="submit" id="answerBtn">Ответить</button>
           </form>
+          <button type="button" id="skipBtn" class="skipBtn">Хочу другую задачу</button>
           <div id="lockBanner" class="lockBanner" hidden>
             <span id="lockHint">Подожди</span>
             <strong id="lockSeconds">15</strong>

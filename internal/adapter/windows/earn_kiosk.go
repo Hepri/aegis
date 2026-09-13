@@ -26,11 +26,12 @@ const (
 
 // EnsureEarnKiosk creates/locks Задачки and ensures Edge opens /earn on logon.
 func EnsureEarnKiosk(serverURL, clientID, exePath string) {
+	// Drop legacy program-wide rules that blocked the Windows service itself
+	// (WSAEACCES / "socket ... forbidden by its access permissions").
+	removeLegacyEarnProgramFirewall()
+
 	if err := ensureEarnUser(); err != nil {
 		log.Printf("earn kiosk user: %v", err)
-	}
-	if err := ensureEarnFirewall(serverURL, exePath); err != nil {
-		log.Printf("earn kiosk service firewall: %v", err)
 	}
 	earnURL := buildEarnURL(serverURL, clientID)
 	log.Printf("Earn kiosk URL: %s", earnURL)
@@ -155,36 +156,15 @@ func resolveServerIPv4Port(serverURL string) (remoteIPs string, port string, err
 	return strings.Join(v4, ","), port, nil
 }
 
-func ensureEarnFirewall(serverURL, exePath string) error {
-	remote, port, err := resolveServerIPv4Port(serverURL)
-	if err != nil {
-		return err
+// removeLegacyEarnProgramFirewall deletes old rules that blocked ALL outbound
+// traffic from aegis-client.exe (including the Windows service). Network limits
+// for Задачки stay on per-user AegisTasksNet* rules only.
+func removeLegacyEarnProgramFirewall() {
+	for _, name := range []string{earnFirewallAllow, earnFirewallAllow + "DNS", earnFirewallBlock} {
+		if err := deleteFirewallRule(name); err == nil {
+			log.Printf("Removed legacy firewall rule %s", name)
+		}
 	}
-	exePath, _ = filepath.Abs(exePath)
-	_ = deleteFirewallRule(earnFirewallAllow)
-	_ = deleteFirewallRule(earnFirewallAllow + "DNS")
-	_ = deleteFirewallRule(earnFirewallBlock)
-
-	allow := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
-		"name="+earnFirewallAllow, "dir=out", "action=allow", "program="+exePath,
-		"remoteip="+remote, "protocol=TCP", "remoteport="+port, "enable=yes")
-	allow.SysProcAttr = hiddenProcAttr()
-	if out, err := allow.CombinedOutput(); err != nil {
-		return fmt.Errorf("allow rule: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	allowDNS := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
-		"name="+earnFirewallAllow+"DNS", "dir=out", "action=allow", "program="+exePath,
-		"protocol=UDP", "remoteport=53", "enable=yes")
-	allowDNS.SysProcAttr = hiddenProcAttr()
-	_ = allowDNS.Run()
-	block := exec.Command("netsh", "advfirewall", "firewall", "add", "rule",
-		"name="+earnFirewallBlock, "dir=out", "action=block", "program="+exePath, "enable=yes")
-	block.SysProcAttr = hiddenProcAttr()
-	if out, err := block.CombinedOutput(); err != nil {
-		return fmt.Errorf("block rule: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	log.Printf("Earn service firewall: %s → %s:%s", exePath, remote, port)
-	return nil
 }
 
 func deleteFirewallRule(name string) error {

@@ -68,9 +68,17 @@ body {
   color: var(--accent);
 }
 .prompt {
-  font-size: 1.35rem;
-  line-height: 1.4;
+  font-size: 1.2rem;
+  line-height: 1.45;
   margin: 0 0 0.75rem;
+}
+.subjectTag {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
 }
 .reward { margin: 0 0 1rem; font-size: 0.9rem; }
 #answerForm {
@@ -129,11 +137,19 @@ button:disabled {
   width: 100%;
 }
 .choiceBtn {
-  flex: 1 1 4rem;
+  flex: 1 1 5.5rem;
   background: #2f3945;
-  font-size: 1.25rem;
+  font-size: 0.95rem;
+  padding: 0.55rem 0.4rem;
 }
 .choiceBtn:hover { background: #3a4654; }
+.skipBtn {
+  margin-top: 0.75rem;
+  width: 100%;
+  background: #3a4552 !important;
+  font-weight: 600;
+}
+.skipBtn:hover { background: #4a5562 !important; }
 #answerForm {
   flex-wrap: wrap;
 }

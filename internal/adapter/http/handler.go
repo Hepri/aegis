@@ -1,6 +1,7 @@
 package http
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -14,14 +15,19 @@ import (
 const (
 	longPollTimeout     = 60 * time.Second
 	maxLongPollInterval = 55 * time.Second
+
+	// DefaultEarnAdminPassword protects admin earn-settings UI/API.
+	// Override with -earn-admin-password or AEGIS_EARN_ADMIN_PASSWORD.
+	DefaultEarnAdminPassword = `Vg#9kL2$mQp7!xRw4Zn`
 )
 
 type Handler struct {
-	repo     port.ConfigRepository
-	activity port.ActivityStore
-	presence port.PresenceStore
-	updates  *updates.Loader
-	loc      *time.Location
+	repo              port.ConfigRepository
+	activity          port.ActivityStore
+	presence          port.PresenceStore
+	updates           *updates.Loader
+	loc               *time.Location
+	earnAdminPassword string
 }
 
 type HandlerOption func(*Handler)
@@ -38,15 +44,47 @@ func WithUpdates(loader *updates.Loader) HandlerOption {
 	return func(h *Handler) { h.updates = loader }
 }
 
+func WithEarnAdminPassword(password string) HandlerOption {
+	return func(h *Handler) { h.earnAdminPassword = password }
+}
+
 func NewHandler(repo port.ConfigRepository, loc *time.Location, opts ...HandlerOption) *Handler {
 	if loc == nil {
 		loc = time.UTC
 	}
-	h := &Handler{repo: repo, loc: loc}
+	h := &Handler{repo: repo, loc: loc, earnAdminPassword: DefaultEarnAdminPassword}
 	for _, opt := range opts {
 		opt(h)
 	}
+	if h.earnAdminPassword == "" {
+		h.earnAdminPassword = DefaultEarnAdminPassword
+	}
 	return h
+}
+
+func (h *Handler) earnAdminPasswordOK(r *http.Request) bool {
+	got := r.Header.Get("X-Earn-Admin-Password")
+	if got == "" {
+		got = r.URL.Query().Get("earn_admin_password")
+	}
+	return h.earnAdminPasswordMatches(got)
+}
+
+func (h *Handler) earnAdminPasswordMatches(got string) bool {
+	want := h.earnAdminPassword
+	if len(got) != len(want) {
+		subtle.ConstantTimeCompare([]byte(got), []byte(want))
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+func (h *Handler) requireEarnAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if h.earnAdminPasswordOK(r) {
+		return true
+	}
+	http.Error(w, "earn admin password required", http.StatusUnauthorized)
+	return false
 }
 
 func (h *Handler) ServeConfig(w http.ResponseWriter, r *http.Request) {

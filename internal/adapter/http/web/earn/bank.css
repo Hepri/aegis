@@ -1,0 +1,123 @@
+:root {
+  --bg: #121820;
+  --card: #1c2430;
+  --text: #eef2f6;
+  --muted: #8b98a5;
+  --accent: #3d9cf0;
+  --ok: #3ecf8e;
+  --bad: #e85d5d;
+  --line: #2a3544;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: radial-gradient(ellipse at top, #1e2a3a 0%, var(--bg) 55%);
+  color: var(--text);
+}
+.bank {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+h1 { margin: 0 0 0.25rem; font-size: 1.6rem; }
+h2 { margin: 0 0 0.75rem; font-size: 1.15rem; }
+.muted { color: var(--muted); }
+.card {
+  background: var(--card);
+  border-radius: 14px;
+  padding: 1.25rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  margin-top: 1rem;
+}
+.input {
+  display: block;
+  width: 100%;
+  max-width: 22rem;
+  margin-top: 0.35rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #121820;
+  color: var(--text);
+  font-size: 1rem;
+}
+.search { max-width: 100%; margin: 0; }
+label { display: block; margin: 0.75rem 0; }
+button, .linkBtn, .tab {
+  border: none;
+  border-radius: 8px;
+  padding: 0.65rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.95rem;
+  text-decoration: none;
+  color: #fff;
+}
+.primary { background: var(--accent); }
+.linkBtn { background: #3a4552; display: inline-block; }
+.error { color: var(--bad); font-weight: 600; }
+.toolbar {
+  display: grid;
+  gap: 0.75rem;
+}
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.tab {
+  background: #2a3340;
+  color: var(--text);
+}
+.tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+.list {
+  margin-top: 0.75rem;
+  max-height: 70vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #121820;
+}
+.item {
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+.item summary {
+  cursor: pointer;
+  line-height: 1.4;
+}
+.meta {
+  margin-top: 0.45rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.answer {
+  margin-top: 0.35rem;
+  color: var(--ok);
+  font-weight: 600;
+}
+.choices {
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.empty { padding: 1rem; color: var(--muted); }
+@media (min-width: 720px) {
+  .toolbar {
+    grid-template-columns: 1fr 16rem;
+    align-items: start;
+  }
+}

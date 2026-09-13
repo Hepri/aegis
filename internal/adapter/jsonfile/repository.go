@@ -553,6 +553,7 @@ func (r *Repository) UpdateEarnSettings(ctx context.Context, clientID string, se
 	}
 	normalized := domain.NormalizeEarnSettings(settings)
 	normalized.MathGeneratorEnabled = settings.MathGeneratorEnabled
+	normalized.DisableRedeem = settings.DisableRedeem
 	cs.EarnSettings = normalized
 	return r.saveLocked()
 }
@@ -584,9 +585,13 @@ func (r *Repository) IssueEarnChallenge(ctx context.Context, clientID, userID st
 	settings := domain.ResolveEarnSettings(cs.EarnSettings)
 
 	// Anti-cheat: same unfinished question across reload / re-login.
+	// Drop sticky challenge if its bank/subject was disabled in settings.
 	if u.ActiveEarnChallenge != nil && u.ActiveEarnChallenge.ID != "" {
-		pub := u.ActiveEarnChallenge.Public()
-		return &pub, lockLeft, nil
+		if settings.ChallengeAllowed(*u.ActiveEarnChallenge) {
+			pub := u.ActiveEarnChallenge.Public()
+			return &pub, lockLeft, nil
+		}
+		u.ActiveEarnChallenge = nil
 	}
 
 	ch, ok := r.newChallengeLocked(cs, u, settings, now, "")
@@ -601,35 +606,58 @@ func (r *Repository) IssueEarnChallenge(ctx context.Context, clientID, userID st
 	return &pub, lockLeft, nil
 }
 
-// newChallengeLocked picks next bank task or generates math. skipBankID excludes a bank task (after wrong streak).
+// newChallengeLocked picks a random unsolved bank task (builtin + client) or generates math.
 func (r *Repository) newChallengeLocked(cs *clientState, u *domain.User, settings domain.EarnSettings, now time.Time, skipBankID string) (domain.EarnChallenge, bool) {
 	solved := map[string]bool{}
 	for _, id := range u.SolvedTaskIDs {
 		solved[id] = true
 	}
-	for _, t := range cs.EarnTasks {
+	rng := rand.New(rand.NewSource(now.UnixNano()))
+	var bank []domain.EarnChallenge
+	for _, t := range domain.MergeEarnBanks(cs.EarnTasks) {
 		if !t.Enabled || solved[t.ID] || t.ID == skipBankID {
 			continue
 		}
-		return domain.EarnChallenge{
+		if domain.IsEarnBankSubject(t.Subject) && !settings.SubjectBankEnabled(t.Subject) {
+			continue
+		}
+		bank = append(bank, domain.EarnChallenge{
 			ID:            t.ID,
 			Prompt:        t.Prompt,
 			Answer:        t.Answer,
-			Choices:       append([]string(nil), t.Choices...),
+			Choices:       domain.ShuffleStrings(rng, t.Choices),
 			Kind:          domain.TaskKind(t),
+			Subject:       domain.SubjectLabel(t.Subject),
 			RewardMinutes: domain.EffectiveReward(t, settings),
 			Source:        domain.EarnSourceBank,
 			BankTaskID:    t.ID,
 			CreatedAt:     now,
-		}, true
+		})
 	}
-	if !settings.MathGeneratorEnabled {
+	mathOK := settings.MathGeneratorEnabled
+	if len(bank) == 0 && !mathOK {
 		return domain.EarnChallenge{}, false
 	}
-	ch := domain.GenerateMathGrade3(rand.New(rand.NewSource(now.UnixNano())), settings.DefaultRewardMinutes)
-	ch.ID = "gen-" + uuid.New().String()
-	ch.CreatedAt = now
-	return ch, true
+	if len(bank) == 0 {
+		ch := domain.GenerateMathGrade3(rng, settings.DefaultRewardMinutes)
+		ch.ID = "gen-" + uuid.New().String()
+		ch.CreatedAt = now
+		ch.Choices = domain.ShuffleStrings(rng, ch.Choices)
+		return ch, true
+	}
+	if !mathOK {
+		return bank[rng.Intn(len(bank))], true
+	}
+	// Equal weight: any bank task or a fresh math problem.
+	slot := rng.Intn(len(bank) + 1)
+	if slot == len(bank) {
+		ch := domain.GenerateMathGrade3(rng, settings.DefaultRewardMinutes)
+		ch.ID = "gen-" + uuid.New().String()
+		ch.CreatedAt = now
+		ch.Choices = domain.ShuffleStrings(rng, ch.Choices)
+		return ch, true
+	}
+	return bank[slot], true
 }
 
 func (r *Repository) AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (domain.EarnAnswerResult, error) {
@@ -748,6 +776,81 @@ func (r *Repository) AnswerEarnTask(ctx context.Context, clientID, userID, taskI
 	}, nil
 }
 
+func (r *Repository) SkipEarnChallenge(ctx context.Context, clientID, userID, taskID string) (domain.EarnAnswerResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cs, ok := r.clients[clientID]
+	if !ok {
+		return domain.EarnAnswerResult{}, domain.ErrClientNotFound
+	}
+	userIdx := -1
+	for i := range cs.Users {
+		if cs.Users[i].ID == userID {
+			userIdx = i
+			break
+		}
+	}
+	if userIdx < 0 {
+		return domain.EarnAnswerResult{}, domain.ErrUserNotFound
+	}
+	u := &cs.Users[userIdx]
+	now := r.now()
+	settings := domain.ResolveEarnSettings(cs.EarnSettings)
+
+	if u.EarnLockedUntil > now.Unix() {
+		left := int(u.EarnLockedUntil - now.Unix())
+		wrong := 0
+		if u.ActiveEarnChallenge != nil {
+			wrong = u.ActiveEarnChallenge.WrongCount
+		}
+		return domain.EarnAnswerResult{
+			Correct:        false,
+			Balance:        u.EarnBalanceMinutes,
+			LockSeconds:    left,
+			WrongCount:     wrong,
+			WrongStreakMax: settings.WrongStreakLimit,
+		}, domain.ErrEarnLocked
+	}
+
+	if u.ActiveEarnChallenge == nil || u.ActiveEarnChallenge.ID != taskID {
+		return domain.EarnAnswerResult{Balance: u.EarnBalanceMinutes}, domain.ErrTaskNotFound
+	}
+	ch := u.ActiveEarnChallenge
+	wrong := ch.WrongCount
+	skipBank := ch.BankTaskID
+	if skipBank == "" {
+		skipBank = ch.ID
+	}
+
+	penalty := settings.WrongStreakPenaltyMinutes
+	if penalty > 0 {
+		if u.EarnBalanceMinutes <= penalty {
+			u.EarnBalanceMinutes = 0
+		} else {
+			u.EarnBalanceMinutes -= penalty
+		}
+	}
+
+	lockSec := settings.WrongLockSeconds
+	u.EarnLockedUntil = now.Add(time.Duration(lockSec) * time.Second).Unix()
+	u.ActiveEarnChallenge = nil
+	if next, ok := r.newChallengeLocked(cs, u, settings, now, skipBank); ok {
+		u.ActiveEarnChallenge = cloneChallenge(&next)
+	}
+	if err := r.saveLocked(); err != nil {
+		return domain.EarnAnswerResult{}, err
+	}
+	return domain.EarnAnswerResult{
+		Correct:         false,
+		Balance:         u.EarnBalanceMinutes,
+		LockSeconds:     lockSec,
+		WrongCount:      wrong,
+		WrongStreakMax:  settings.WrongStreakLimit,
+		PenaltyMinutes:  penalty,
+		ReplaceQuestion: true,
+	}, nil
+}
+
 func cloneChallenge(c *domain.EarnChallenge) *domain.EarnChallenge {
 	if c == nil {
 		return nil
@@ -766,6 +869,10 @@ func (r *Repository) RedeemEarnMinutes(ctx context.Context, clientID, userID str
 	cs, ok := r.clients[clientID]
 	if !ok {
 		return domain.ErrClientNotFound
+	}
+	settings := domain.ResolveEarnSettings(cs.EarnSettings)
+	if settings.DisableRedeem {
+		return domain.ErrRedeemDisabled
 	}
 	userIdx := -1
 	for i := range cs.Users {

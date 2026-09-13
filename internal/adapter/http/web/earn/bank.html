@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis — Банк задачек</title>
+  <link rel="stylesheet" href="/earn/bank.css">
+</head>
+<body>
+  <main class="bank">
+    <header>
+      <div>
+        <h1>Банк задачек</h1>
+        <p class="muted">Просмотр вопросов по предметам (3 класс)</p>
+      </div>
+      <a class="linkBtn" href="/">← В админку</a>
+    </header>
+
+    <section id="lockGate" class="card">
+      <h2>Пароль раздела</h2>
+      <p class="muted">Тот же пароль, что для «Задачки → время»</p>
+      <label>Пароль
+        <input type="password" id="password" class="input" autocomplete="current-password">
+      </label>
+      <button type="button" id="unlockBtn" class="primary">Открыть</button>
+      <p id="lockError" class="error" hidden>Неверный пароль</p>
+    </section>
+
+    <section id="browser" class="card" hidden>
+      <div class="toolbar">
+        <div id="subjectTabs" class="tabs"></div>
+        <input type="search" id="search" class="input search" placeholder="Поиск по тексту…">
+      </div>
+      <p id="stats" class="muted"></p>
+      <div id="list" class="list"></div>
+    </section>
+  </main>
+  <script src="/earn/bank.js"></script>
+</body>
+</html>

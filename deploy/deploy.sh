@@ -77,10 +77,17 @@ deploy_redeploy() {
     build_server
     build_client_update
 
-    # Stop service, copy binary, start
-    ssh -t "$TARGET" "sudo systemctl stop $UNIT_NAME"
-    scp "$PROJECT_ROOT/aegis-server" "$TARGET:$DEPLOY_PATH/"
-    ssh -t "$TARGET" "sudo systemctl start $UNIT_NAME"
+    # Stop service, copy binary, start.
+    # Important: replace-on-disk while the old process still runs leaves the old
+    # binary mapped in memory — always stop/kill before the new process starts.
+    if ssh -t "$TARGET" "sudo systemctl stop $UNIT_NAME"; then
+        scp "$PROJECT_ROOT/aegis-server" "$TARGET:$DEPLOY_PATH/"
+        ssh -t "$TARGET" "sudo systemctl start $UNIT_NAME"
+    else
+        echo "systemctl stop failed; falling back to kill + nohup"
+        scp "$PROJECT_ROOT/aegis-server" "$TARGET:$DEPLOY_PATH/aegis-server.new"
+        ssh "$TARGET" "cd $DEPLOY_PATH && pid=\$(ps -eo pid=,args= | awk '/\\/opt\\/aegis\\/aegis-server( |\$)/{print \$1; exit}') && if [ -n \"\$pid\" ]; then kill -9 \$pid; fi && mv -f aegis-server.new aegis-server && chmod +x aegis-server && nohup ./aegis-server --data $DEPLOY_PATH/aegis-data.json --updates $DEPLOY_PATH/updates --port 8080 --timezone Asia/Yekaterinburg >>server.log 2>&1 &"
+    fi
 
     publish_client_update
 

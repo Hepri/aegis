@@ -19,6 +19,7 @@ func main() {
 	port := flag.Int("port", 8080, "HTTP port")
 	timezone := flag.String("timezone", "Asia/Yekaterinburg", "Timezone for all times (e.g. Asia/Ekaterinburg)")
 	updatesDir := flag.String("updates", "", "Directory with client update binaries (default: <data-dir>/updates)")
+	earnAdminPasswordFlag := flag.String("earn-admin-password", "", "Password for admin earn settings (env AEGIS_EARN_ADMIN_PASSWORD)")
 	flag.Parse()
 
 	loc, err := time.LoadLocation(*timezone)
@@ -49,10 +50,19 @@ func main() {
 	presenceStore := jsonfile.NewPresenceStore(absPath)
 	updateLoader := updates.NewLoader(updDir)
 
+	earnAdminPassword := *earnAdminPasswordFlag
+	if earnAdminPassword == "" {
+		earnAdminPassword = os.Getenv("AEGIS_EARN_ADMIN_PASSWORD")
+	}
+	if earnAdminPassword == "" {
+		earnAdminPassword = httpadapter.DefaultEarnAdminPassword
+	}
+
 	handler := httpadapter.NewHandler(repo, loc,
 		httpadapter.WithActivity(activityStore),
 		httpadapter.WithPresence(presenceStore),
 		httpadapter.WithUpdates(updateLoader),
+		httpadapter.WithEarnAdminPassword(earnAdminPassword),
 	)
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -60,6 +70,7 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", *port)
 	log.Printf("Aegis server starting on http://localhost%s (updates=%s)", addr, updDir)
+	log.Printf("Earn admin settings are password-protected")
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}

@@ -76,11 +76,45 @@ async function deleteTemporaryAccess(clientId, requestId) {
 }
 
 async function updateEarnSettings(clientId, settings) {
-  await fetch(`${API}/clients/${clientId}/earn-settings`, {
+  const res = await fetch(`${API}/clients/${clientId}/earn-settings`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...earnAdminHeaders()
+    },
     body: JSON.stringify(settings)
   });
+  if (res.status === 401) {
+    clearEarnAdminSession();
+    throw new Error('Нужен пароль раздела задачек');
+  }
+  if (!res.ok) throw new Error(await res.text() || 'Не удалось сохранить');
+}
+
+const EARN_ADMIN_PASS_KEY = 'aegis_earn_admin_password';
+
+function earnAdminHeaders() {
+  const pw = sessionStorage.getItem(EARN_ADMIN_PASS_KEY) || '';
+  return pw ? { 'X-Earn-Admin-Password': pw } : {};
+}
+
+function clearEarnAdminSession() {
+  sessionStorage.removeItem(EARN_ADMIN_PASS_KEY);
+}
+
+function isEarnAdminUnlocked() {
+  return Boolean(sessionStorage.getItem(EARN_ADMIN_PASS_KEY));
+}
+
+async function unlockEarnAdmin(password) {
+  const res = await fetch(`${API}/earn-admin/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password })
+  });
+  if (!res.ok) return false;
+  sessionStorage.setItem(EARN_ADMIN_PASS_KEY, password);
+  return true;
 }
 
 const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
@@ -341,14 +375,24 @@ async function selectClient() {
 
 function renderEarnSettings() {
   const box = document.getElementById('earnSettings');
+  const gate = document.getElementById('earnLockGate');
   if (!box || !currentClient) return;
+
+  if (!isEarnAdminUnlocked()) {
+    if (gate) gate.hidden = false;
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  if (gate) gate.hidden = true;
+  box.hidden = false;
+
   const s = currentClient.earn_settings || {};
-  const taskCount = currentClient.earn_task_count || 0;
   const earnURL = `${location.origin}/earn?client_id=${encodeURIComponent(currentClientId)}`;
+  const bankURL = `${location.origin}/earn/bank?client_id=${encodeURIComponent(currentClientId)}`;
   box.innerHTML = `
-    <p class="configPreviewHint">Банк задачек: <strong>${taskCount}</strong> · генератор математики включён по умолчанию</p>
-    <p class="configPreviewHint">Ребёнок / отладка из LAN: <a href="${earnURL}" target="_blank" rel="noopener">${earnURL}</a></p>
-    <p class="configPreviewHint">Без client_id тоже работает: <a href="${location.origin}/earn" target="_blank" rel="noopener">${location.origin}/earn</a> (выбор ПК)</p>
+    <p class="configPreviewHint">Ребёнок / LAN: <a href="${earnURL}" target="_blank" rel="noopener">${earnURL}</a></p>
+    <p class="configPreviewHint">Банк вопросов: <a href="${bankURL}" target="_blank" rel="noopener">${bankURL}</a></p>
     <label>Минут за задачу
       <input type="number" id="earnDefaultReward" min="1" max="120" value="${s.default_reward_minutes || 1}" class="smallInput">
     </label>
@@ -364,24 +408,44 @@ function renderEarnSettings() {
     <label>Штраф (мин с баланса)
       <input type="number" id="earnWrongPenalty" min="0" max="60" value="${s.wrong_streak_penalty_minutes ?? 1}" class="smallInput">
     </label>
-    <label class="checkboxLabel"><input type="checkbox" id="earnMathGen" ${s.math_generator_enabled !== false ? 'checked' : ''}> Генератор математики (3 класс)</label>
+    <label class="checkboxLabel"><input type="checkbox" id="earnMathGen" ${s.math_generator_enabled !== false ? 'checked' : ''}> Генератор математики (составные задачи)</label>
+    <label class="checkboxLabel"><input type="checkbox" id="earnRedeemEnabled" ${s.disable_redeem ? '' : 'checked'}> Разрешить «Купить время»</label>
+    <p class="configPreviewHint">Банки вопросов (выкл. = не выдавать)</p>
+    <div class="earnBankToggles" id="earnBankToggles">
+      ${['математика', 'английский', 'русский', 'окружающий мир', 'литература'].map((subj) => {
+        const on = !(Array.isArray(s.disabled_subjects) && s.disabled_subjects.includes(subj));
+        const id = 'earnBank_' + subj.replace(/\s+/g, '_');
+        return `<label class="checkboxLabel"><input type="checkbox" data-earn-bank="${subj}" id="${id}" ${on ? 'checked' : ''}> ${subj}</label>`;
+      }).join('')}
+    </div>
     <div class="earnActions">
       <button type="button" id="saveEarnSettings" class="primaryBtn">Сохранить награды</button>
       <button type="button" id="clearEarnBalances" class="dangerBtn">Стереть накопленное время</button>
+      <button type="button" id="lockEarnSettings" class="secondaryBtn">Закрыть раздел</button>
     </div>
   `;
   document.getElementById('saveEarnSettings').onclick = async () => {
-    await updateEarnSettings(currentClientId, {
-      default_reward_minutes: Number(document.getElementById('earnDefaultReward').value) || 1,
-      max_earn_per_day: Number(document.getElementById('earnMaxPerDay').value) || 120,
-      wrong_lock_seconds: Number(document.getElementById('earnWrongLock').value) || 15,
-      wrong_streak_limit: Number(document.getElementById('earnWrongStreak').value) || 3,
-      wrong_streak_penalty_minutes: Number(document.getElementById('earnWrongPenalty').value) || 0,
-      math_generator_enabled: document.getElementById('earnMathGen').checked
-    });
-    currentClient = await getClient(currentClientId);
-    renderEarnSettings();
-    renderUsers();
+    try {
+      const disabledSubjects = [...document.querySelectorAll('#earnBankToggles input[data-earn-bank]')]
+        .filter((el) => !el.checked)
+        .map((el) => el.getAttribute('data-earn-bank'));
+      await updateEarnSettings(currentClientId, {
+        default_reward_minutes: Number(document.getElementById('earnDefaultReward').value) || 1,
+        max_earn_per_day: Number(document.getElementById('earnMaxPerDay').value) || 120,
+        wrong_lock_seconds: Number(document.getElementById('earnWrongLock').value) || 15,
+        wrong_streak_limit: Number(document.getElementById('earnWrongStreak').value) || 3,
+        wrong_streak_penalty_minutes: Number(document.getElementById('earnWrongPenalty').value) || 0,
+        math_generator_enabled: document.getElementById('earnMathGen').checked,
+        disable_redeem: !document.getElementById('earnRedeemEnabled').checked,
+        disabled_subjects: disabledSubjects
+      });
+      currentClient = await getClient(currentClientId);
+      renderEarnSettings();
+      renderUsers();
+    } catch (err) {
+      alert(err.message || 'Ошибка');
+      renderEarnSettings();
+    }
   };
   document.getElementById('clearEarnBalances').onclick = async () => {
     const users = currentClient.users || [];
@@ -391,7 +455,16 @@ function renderEarnSettings() {
       ? 'Балансы уже нулевые. Всё равно сбросить?'
       : `Стереть всё накопленное время (${total} мин)?\n\n${names}\n\nЭто нельзя отменить.`;
     if (!confirm(msg)) return;
-    const res = await fetch(`${API}/clients/${currentClientId}/earn-balances/clear`, { method: 'POST' });
+    const res = await fetch(`${API}/clients/${currentClientId}/earn-balances/clear`, {
+      method: 'POST',
+      headers: earnAdminHeaders()
+    });
+    if (res.status === 401) {
+      clearEarnAdminSession();
+      alert('Нужен пароль раздела задачек');
+      renderEarnSettings();
+      return;
+    }
     if (!res.ok) {
       alert(await res.text() || 'Не удалось сбросить');
       return;
@@ -400,6 +473,34 @@ function renderEarnSettings() {
     renderEarnSettings();
     renderUsers();
   };
+  document.getElementById('lockEarnSettings').onclick = () => {
+    clearEarnAdminSession();
+    renderEarnSettings();
+  };
+}
+
+function wireEarnLockGate() {
+  const btn = document.getElementById('earnUnlockBtn');
+  const input = document.getElementById('earnAdminPassword');
+  const err = document.getElementById('earnLockError');
+  if (!btn || !input) return;
+  const tryUnlock = async () => {
+    if (err) err.hidden = true;
+    const ok = await unlockEarnAdmin(input.value);
+    if (!ok) {
+      if (err) err.hidden = false;
+      return;
+    }
+    input.value = '';
+    renderEarnSettings();
+  };
+  btn.onclick = tryUnlock;
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      tryUnlock();
+    }
+  });
 }
 
 function formatTime(isoStr) {
@@ -707,6 +808,7 @@ document.getElementById('refreshActivity').addEventListener('click', renderActiv
 document.getElementById('activityDate').addEventListener('change', renderActivity);
 
 loadClients();
+wireEarnLockGate();
 setInterval(() => {
   if (currentClientId) {
     getClient(currentClientId).then(c => {

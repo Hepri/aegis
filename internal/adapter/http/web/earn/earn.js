@@ -100,6 +100,8 @@ function clearLockTimer() {
 function setAnswerEnabled(on) {
   $('answerBtn').disabled = !on;
   $('answerInput').disabled = !on;
+  const skip = $('skipBtn');
+  if (skip) skip.disabled = !on;
   $('choiceButtons').querySelectorAll('button').forEach((b) => { b.disabled = !on; });
 }
 
@@ -132,10 +134,11 @@ function renderChoices(choices) {
   const box = $('choiceButtons');
   const input = $('answerInput');
   if (choices && choices.length) {
+    const shuffled = shuffleArray(choices);
     box.hidden = false;
     input.hidden = true;
     input.required = false;
-    box.innerHTML = choices.map((c) =>
+    box.innerHTML = shuffled.map((c) =>
       `<button type="button" class="choiceBtn" data-choice="${String(c).replace(/"/g, '&quot;')}">${c}</button>`
     ).join('');
     box.onclick = (e) => {
@@ -149,6 +152,17 @@ function renderChoices(choices) {
     input.hidden = false;
     input.required = true;
   }
+}
+
+function shuffleArray(arr) {
+  const out = Array.from(arr || []);
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = out[i];
+    out[i] = out[j];
+    out[j] = tmp;
+  }
+  return out;
 }
 
 async function pickClient() {
@@ -221,27 +235,34 @@ function bootUser(state) {
   const u = (state.users || []).find((x) => x.id === userId) || state.user;
   setBalance(u ? u.balance_minutes : 0);
   updateWrongUI(u ? u.wrong_count : 0);
+  earnSettings = state.earn_settings || earnSettings || {};
 
-  const opts = state.redeem_options || [5, 15, 30];
-  $('redeemButtons').innerHTML = opts.map((m) =>
-    `<button type="button" data-redeem="${m}">${m} мин</button>`
-  ).join('');
-  $('redeemButtons').onclick = async (e) => {
-    const btn = e.target.closest('[data-redeem]');
-    if (!btn || btn.disabled) return;
-    const minutes = Number(btn.dataset.redeem);
-    try {
-      const res = await api('/api/earn/redeem', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_id: clientId, user_id: userId, minutes })
-      });
-      setBalance(res.balance_minutes);
-      showFeedback($('redeemMsg'), true, res.message || `Куплено ${minutes} мин`);
-    } catch (err) {
-      showFeedback($('redeemMsg'), false, err.message || 'Не удалось купить');
-    }
-  };
+  const redeemOn = state.redeem_enabled !== false && !(earnSettings && earnSettings.disable_redeem);
+  const redeemBox = document.querySelector('.redeem');
+  if (redeemBox) redeemBox.hidden = !redeemOn;
+
+  if (redeemOn) {
+    const opts = state.redeem_options || [5, 15, 30];
+    $('redeemButtons').innerHTML = opts.map((m) =>
+      `<button type="button" data-redeem="${m}">${m} мин</button>`
+    ).join('');
+    $('redeemButtons').onclick = async (e) => {
+      const btn = e.target.closest('[data-redeem]');
+      if (!btn || btn.disabled) return;
+      const minutes = Number(btn.dataset.redeem);
+      try {
+        const res = await api('/api/earn/redeem', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: clientId, user_id: userId, minutes })
+        });
+        setBalance(res.balance_minutes);
+        showFeedback($('redeemMsg'), true, res.message || `Куплено ${minutes} мин`);
+      } catch (err) {
+        showFeedback($('redeemMsg'), false, err.message || 'Не удалось купить');
+      }
+    };
+  }
 
   if (u && u.lock_seconds > 0) {
     startLock(u.lock_seconds);
@@ -261,6 +282,9 @@ async function loadNextTask() {
   currentTask = task;
   $('emptyTasks').hidden = true;
   $('taskContent').hidden = false;
+  const subj = task.subject || '';
+  $('taskSubject').textContent = subj;
+  $('taskSubject').hidden = !subj;
   $('taskPrompt').textContent = task.prompt;
   $('taskReward').textContent = String(task.reward_minutes);
   updateWrongUI(task.wrong_count || 0);
@@ -325,6 +349,48 @@ $('answerForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!currentTask) return;
   await submitAnswer($('answerInput').value);
+});
+
+$('skipBtn').addEventListener('click', async () => {
+  if (!currentTask) return;
+  const penalty = Number(earnSettings.wrong_streak_penalty_minutes);
+  const lockSec = Number(earnSettings.wrong_lock_seconds) || 15;
+  const penaltyText = penalty > 0 ? `−${penalty} мин с баланса` : 'без штрафа минут';
+  const ok = confirm(
+    `Точно хочешь другую задачу?\n\nЭто как ${earnSettings.wrong_streak_limit || 3} ошибки подряд: ${penaltyText} и пауза ${lockSec} с.`
+  );
+  if (!ok) return;
+  try {
+    const res = await api('/api/earn/skip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: clientId,
+        user_id: userId,
+        task_id: currentTask.id
+      })
+    });
+    setBalance(res.balance_minutes);
+    updateWrongUI(res.wrong_count);
+    const pen = res.penalty_minutes || 0;
+    showFeedback(
+      $('answerFeedback'),
+      false,
+      pen > 0 ? `Другая задача (−${pen} мин), подожди` : 'Другая задача после паузы'
+    );
+    if (res.lock_seconds > 0) {
+      startLock(res.lock_seconds, 'Новая задачка через');
+    }
+    setTimeout(loadNextTask, (res.lock_seconds || 0) * 1000 + 50);
+  } catch (err) {
+    if (err.status === 423 && err.payload) {
+      setBalance(err.payload.balance_minutes);
+      startLock(err.payload.lock_seconds || 0);
+      showFeedback($('answerFeedback'), false, 'Ещё рано');
+      return;
+    }
+    showFeedback($('answerFeedback'), false, err.message || 'Ошибка');
+  }
 });
 
 loadState().catch((err) => {

@@ -11,10 +11,14 @@ import (
 
 func (h *Handler) registerEarnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /earn", h.ServeEarnPage)
+	mux.HandleFunc("GET /earn/bank", h.ServeEarnBankPage)
 	mux.HandleFunc("GET /api/earn/state", h.EarnState)
 	mux.HandleFunc("GET /api/earn/next", h.EarnNext)
 	mux.HandleFunc("POST /api/earn/answer", h.EarnAnswer)
+	mux.HandleFunc("POST /api/earn/skip", h.EarnSkip)
 	mux.HandleFunc("POST /api/earn/redeem", h.EarnRedeem)
+	mux.HandleFunc("POST /api/earn-admin/unlock", h.EarnAdminUnlock)
+	mux.HandleFunc("GET /api/earn-admin/bank", h.EarnAdminBank)
 	mux.HandleFunc("PUT /api/clients/{id}/earn-settings", h.UpdateEarnSettings)
 	mux.HandleFunc("POST /api/clients/{id}/earn-balances/clear", h.ClearEarnBalances)
 }
@@ -23,6 +27,16 @@ func (h *Handler) ServeEarnPage(w http.ResponseWriter, r *http.Request) {
 	data, err := webFS.ReadFile("web/earn/index.html")
 	if err != nil {
 		http.Error(w, "earn UI not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(data)
+}
+
+func (h *Handler) ServeEarnBankPage(w http.ResponseWriter, r *http.Request) {
+	data, err := webFS.ReadFile("web/earn/bank.html")
+	if err != nil {
+		http.Error(w, "earn bank UI not found", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -67,7 +81,7 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 			solved[id] = true
 		}
 		available := 0
-		for _, t := range state.EarnTasks {
+		for _, t := range domain.MergeEarnBanks(state.EarnTasks) {
 			if t.Enabled && !solved[t.ID] {
 				available++
 			}
@@ -109,6 +123,7 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 		"task_count":     len(state.EarnTasks),
 		"enabled_tasks":  countEnabledTasks(state.EarnTasks),
 		"earn_settings":  settings,
+		"redeem_enabled": !settings.DisableRedeem,
 		"users":          users,
 		"redeem_options": []int{5, 15, 30},
 	}
@@ -155,6 +170,7 @@ func (h *Handler) EarnNext(w http.ResponseWriter, r *http.Request) {
 		"id":             task.ID,
 		"prompt":         task.Prompt,
 		"kind":           task.Kind,
+		"subject":        task.Subject,
 		"choices":        task.Choices,
 		"reward_minutes": task.RewardMinutes,
 		"source":         task.Source,
@@ -200,6 +216,40 @@ func (h *Handler) EarnAnswer(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+func (h *Handler) EarnSkip(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ClientID string `json:"client_id"`
+		UserID   string `json:"user_id"`
+		TaskID   string `json:"task_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ClientID == "" || req.UserID == "" || req.TaskID == "" {
+		http.Error(w, "client_id, user_id, task_id required", http.StatusBadRequest)
+		return
+	}
+	result, err := h.repo.SkipEarnChallenge(r.Context(), req.ClientID, req.UserID, req.TaskID)
+	if err != nil {
+		if errors.Is(err, domain.ErrEarnLocked) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusLocked)
+			json.NewEncoder(w).Encode(result)
+			return
+		}
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrUserNotFound), errors.Is(err, domain.ErrTaskNotFound):
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 func (h *Handler) EarnRedeem(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ClientID string `json:"client_id"`
@@ -217,6 +267,8 @@ func (h *Handler) EarnRedeem(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case errors.Is(err, domain.ErrInsufficientBalance):
 			status = http.StatusConflict
+		case errors.Is(err, domain.ErrRedeemDisabled):
+			status = http.StatusForbidden
 		}
 		http.Error(w, err.Error(), status)
 		return
@@ -240,7 +292,71 @@ func (h *Handler) EarnRedeem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) EarnAdminUnlock(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !h.earnAdminPasswordMatches(req.Password) {
+		http.Error(w, "неверный пароль", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (h *Handler) EarnAdminBank(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEarnAdmin(w, r) {
+		return
+	}
+	clientID := r.URL.Query().Get("client_id")
+	var clientTasks []domain.EarnTask
+	if clientID != "" {
+		st, err := h.repo.GetClient(r.Context(), clientID)
+		if err == nil && st != nil {
+			clientTasks = st.EarnTasks
+		}
+	}
+	tasks := domain.MergeEarnBanks(clientTasks)
+	bySubject := map[string]int{}
+	type taskView struct {
+		ID            string   `json:"id"`
+		Subject       string   `json:"subject"`
+		Prompt        string   `json:"prompt"`
+		Answer        string   `json:"answer"`
+		Choices       []string `json:"choices,omitempty"`
+		Kind          string   `json:"kind"`
+		RewardMinutes int      `json:"reward_minutes"`
+		Source        string   `json:"source"`
+	}
+	views := make([]taskView, 0, len(tasks)+1)
+	for _, t := range tasks {
+		subj := domain.SubjectLabel(t.Subject)
+		bySubject[subj]++
+		src := domain.EarnSourceBank
+		views = append(views, taskView{
+			ID: t.ID, Subject: subj, Prompt: t.Prompt, Answer: t.Answer,
+			Choices: append([]string(nil), t.Choices...), Kind: domain.TaskKind(t),
+			RewardMinutes: t.RewardMinutes, Source: src,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"task_count":  len(views),
+		"by_subject":  bySubject,
+		"tasks":       views,
+		"math_note":  "Математика: 100 задач в банке + дополнительная генерация новых составных задач.",
+		"subjects":   []string{domain.SubjectMath, domain.SubjectEnglish, domain.SubjectRussian, domain.SubjectWorld, domain.SubjectLiterature},
+	})
+}
+
 func (h *Handler) UpdateEarnSettings(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEarnAdmin(w, r) {
+		return
+	}
 	clientID := r.PathValue("id")
 	var req domain.EarnSettings
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -253,8 +369,10 @@ func (h *Handler) UpdateEarnSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	gen := req.MathGeneratorEnabled
+	disableRedeem := req.DisableRedeem
 	req = domain.NormalizeEarnSettings(req)
 	req.MathGeneratorEnabled = gen
+	req.DisableRedeem = disableRedeem
 	if err := h.repo.UpdateEarnSettings(r.Context(), clientID, req); err != nil {
 		if errors.Is(err, domain.ErrClientNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -267,6 +385,9 @@ func (h *Handler) UpdateEarnSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ClearEarnBalances(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEarnAdmin(w, r) {
+		return
+	}
 	clientID := r.PathValue("id")
 	if err := h.repo.ClearEarnBalances(r.Context(), clientID); err != nil {
 		if errors.Is(err, domain.ErrClientNotFound) {

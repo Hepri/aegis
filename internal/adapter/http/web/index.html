@@ -38,7 +38,15 @@
       <button id="addUser">+ Добавить пользователя</button>
       <div id="earnSection" class="earnSection">
         <h3>Задачки → время</h3>
-        <div id="earnSettings"></div>
+        <div id="earnLockGate" class="earnLockGate">
+          <p class="configPreviewHint">Раздел защищён паролем</p>
+          <label>Пароль
+            <input type="password" id="earnAdminPassword" class="smallInput" autocomplete="current-password">
+          </label>
+          <button type="button" id="earnUnlockBtn" class="primaryBtn">Открыть</button>
+          <p id="earnLockError" class="earnLockError" hidden>Неверный пароль</p>
+        </div>
+        <div id="earnSettings" hidden></div>
       </div>
       <h3>Расписание</h3>
       <div id="scheduleEditor"></div>

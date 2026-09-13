@@ -4,31 +4,23 @@ import (
 	"math/rand"
 	"strconv"
 	"testing"
-	"time"
 )
 
 func TestGenerateMathGrade3_AnswersMatch(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 300; i++ {
 		ch := GenerateMathGrade3(rng, 1)
 		if ch.Prompt == "" || ch.Answer == "" {
 			t.Fatalf("empty challenge: %+v", ch)
 		}
-		if ch.Kind == EarnKindChoice {
-			found := false
-			for _, c := range ch.Choices {
-				if c == ch.Answer {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Fatalf("answer %q not in choices %v for %q", ch.Answer, ch.Choices, ch.Prompt)
-			}
-		} else {
-			if _, err := strconv.Atoi(ch.Answer); err != nil {
-				t.Fatalf("non-int answer %q for %q", ch.Answer, ch.Prompt)
-			}
+		if len(ch.Prompt) < 20 {
+			t.Fatalf("prompt too short: %q", ch.Prompt)
+		}
+		if ch.Subject != SubjectMath {
+			t.Fatalf("subject=%q", ch.Subject)
+		}
+		if _, err := strconv.Atoi(ch.Answer); err != nil {
+			t.Fatalf("non-int answer %q for %q", ch.Answer, ch.Prompt)
 		}
 	}
 }
@@ -41,5 +33,51 @@ func TestGenerateMathGrade3_DeterministicSeed(t *testing.T) {
 	if a.Prompt != b.Prompt || a.Answer != b.Answer {
 		t.Fatalf("expected same with same seed: %+v vs %+v", a, b)
 	}
-	_ = time.Now()
+}
+
+func TestBuiltInEarnBank_PerSubject100(t *testing.T) {
+	bank := BuiltInEarnBank()
+	bySubj := map[string]int{}
+	for _, task := range bank {
+		bySubj[task.Subject]++
+		if task.ID == "" || task.Prompt == "" || task.Answer == "" {
+			t.Fatalf("bad task: %+v", task)
+		}
+		if len(task.Choices) > 0 {
+			if len(task.Choices) < 10 || len(task.Choices) > 12 {
+				t.Fatalf("%s choices=%d", task.ID, len(task.Choices))
+			}
+			found := false
+			for _, c := range task.Choices {
+				if c == task.Answer {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("answer missing in choices: %s", task.ID)
+			}
+		}
+	}
+	for _, need := range []string{SubjectEnglish, SubjectRussian, SubjectWorld, SubjectLiterature, SubjectMath} {
+		if bySubj[need] != 100 {
+			t.Fatalf("%s count=%d want 100", need, bySubj[need])
+		}
+	}
+}
+
+func TestShuffleStrings_MovesFirst(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	in := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"}
+	moved := false
+	for i := 0; i < 20; i++ {
+		out := ShuffleStrings(rng, in)
+		if out[0] != "A" {
+			moved = true
+			break
+		}
+	}
+	if !moved {
+		t.Fatal("shuffle never moved first element")
+	}
 }

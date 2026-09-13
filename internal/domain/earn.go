@@ -2,6 +2,8 @@ package domain
 
 import (
 	"errors"
+	"math/rand"
+	"strings"
 	"time"
 )
 
@@ -14,6 +16,7 @@ var (
 	ErrInsufficientBalance = errors.New("insufficient balance")
 	ErrInvalidMinutes      = errors.New("minutes must be positive")
 	ErrEarnLocked          = errors.New("earn locked after wrong answer")
+	ErrRedeemDisabled      = errors.New("redeem disabled")
 )
 
 const (
@@ -43,6 +46,7 @@ type EarnChallenge struct {
 	Answer        string    `json:"answer"`
 	Choices       []string  `json:"choices,omitempty"`
 	Kind          string    `json:"kind,omitempty"`
+	Subject       string    `json:"subject,omitempty"`
 	RewardMinutes int       `json:"reward_minutes"`
 	Source        string    `json:"source"`
 	BankTaskID    string    `json:"bank_task_id,omitempty"`
@@ -55,6 +59,7 @@ type EarnPublicTask struct {
 	ID            string   `json:"id"`
 	Prompt        string   `json:"prompt"`
 	Kind          string   `json:"kind"`
+	Subject       string   `json:"subject,omitempty"`
 	Choices       []string `json:"choices,omitempty"`
 	RewardMinutes int      `json:"reward_minutes"`
 	Source        string   `json:"source"`
@@ -75,12 +80,14 @@ type EarnAnswerResult struct {
 
 // EarnSettings are per-client defaults/limits for the earn wallet.
 type EarnSettings struct {
-	DefaultRewardMinutes     int  `json:"default_reward_minutes"`
-	MaxEarnPerDay            int  `json:"max_earn_per_day"`
-	WrongLockSeconds         int  `json:"wrong_lock_seconds"`
-	WrongStreakLimit         int  `json:"wrong_streak_limit"`          // N wrong answers → penalty + new question
-	WrongStreakPenaltyMinutes int `json:"wrong_streak_penalty_minutes"` // minutes removed after N wrongs
-	MathGeneratorEnabled     bool `json:"math_generator_enabled"`
+	DefaultRewardMinutes      int      `json:"default_reward_minutes"`
+	MaxEarnPerDay             int      `json:"max_earn_per_day"`
+	WrongLockSeconds          int      `json:"wrong_lock_seconds"`
+	WrongStreakLimit          int      `json:"wrong_streak_limit"`          // N wrong answers → penalty + new question
+	WrongStreakPenaltyMinutes int      `json:"wrong_streak_penalty_minutes"` // minutes removed after N wrongs
+	MathGeneratorEnabled      bool     `json:"math_generator_enabled"`
+	DisableRedeem             bool     `json:"disable_redeem"`               // true → hide/block «купить время»
+	DisabledSubjects          []string `json:"disabled_subjects,omitempty"` // bank subjects to skip (see EarnBankSubjects)
 }
 
 // EarnDayStats tracks daily earn caps for one user.
@@ -118,7 +125,52 @@ func NormalizeEarnSettings(s EarnSettings) EarnSettings {
 	if s.WrongStreakPenaltyMinutes < 0 {
 		s.WrongStreakPenaltyMinutes = d.WrongStreakPenaltyMinutes
 	}
+	s.DisabledSubjects = NormalizeDisabledSubjects(s.DisabledSubjects)
 	return s
+}
+
+// NormalizeDisabledSubjects keeps unique known bank subjects only.
+func NormalizeDisabledSubjects(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range in {
+		s := strings.TrimSpace(raw)
+		if !IsEarnBankSubject(s) || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// SubjectBankEnabled reports whether curated bank tasks of this subject may be issued.
+// Unknown / empty subjects (custom tasks) stay enabled.
+func (s EarnSettings) SubjectBankEnabled(subject string) bool {
+	subj := strings.TrimSpace(subject)
+	if subj == "" || !IsEarnBankSubject(subj) {
+		return true
+	}
+	for _, d := range s.DisabledSubjects {
+		if d == subj {
+			return false
+		}
+	}
+	return true
+}
+
+// ChallengeAllowed reports whether an active challenge may stay sticky under current settings.
+func (s EarnSettings) ChallengeAllowed(ch EarnChallenge) bool {
+	if ch.ID == "" {
+		return false
+	}
+	if ch.Source == EarnSourceGen {
+		return s.MathGeneratorEnabled
+	}
+	return s.SubjectBankEnabled(ch.Subject)
 }
 
 func EffectiveReward(task EarnTask, settings EarnSettings) int {
@@ -148,6 +200,7 @@ func (c EarnChallenge) Public() EarnPublicTask {
 		ID:            c.ID,
 		Prompt:        c.Prompt,
 		Kind:          kind,
+		Subject:       SubjectLabel(c.Subject),
 		Choices:       append([]string(nil), c.Choices...),
 		RewardMinutes: c.RewardMinutes,
 		Source:        c.Source,
@@ -168,5 +221,17 @@ func ResolveEarnSettings(s EarnSettings) EarnSettings {
 	} else {
 		out.MathGeneratorEnabled = s.MathGeneratorEnabled
 	}
+	out.DisableRedeem = s.DisableRedeem
+	out.DisabledSubjects = NormalizeDisabledSubjects(s.DisabledSubjects)
+	return out
+}
+
+// ShuffleStrings returns a shuffled copy of in.
+func ShuffleStrings(rng *rand.Rand, in []string) []string {
+	out := append([]string(nil), in...)
+	if rng == nil || len(out) < 2 {
+		return out
+	}
+	rng.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
 	return out
 }

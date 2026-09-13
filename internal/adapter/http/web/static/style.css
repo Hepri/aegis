@@ -103,6 +103,78 @@ li {
   gap: 0.5rem;
   margin-top: 0.75rem;
 }
+.earnBankBrowser {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid #2a3550;
+}
+.earnBankBrowser h4 {
+  margin: 0 0 0.5rem;
+}
+.earnBankFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 0.5rem;
+}
+.earnBankList {
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 0.5rem;
+  border: 1px solid #2a3550;
+  border-radius: 8px;
+  background: #0f1628;
+}
+.earnBankItem {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #1c2740;
+}
+.earnBankItem summary {
+  cursor: pointer;
+  line-height: 1.35;
+}
+.earnBankSubj {
+  display: inline-block;
+  margin-right: 0.4rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: #243456;
+  color: #9ec1ff;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+.earnBankAnswer {
+  margin-top: 0.45rem;
+  color: #b8c4d6;
+  font-size: 0.9rem;
+}
+.earnBankChoices {
+  margin-top: 0.35rem;
+  color: #8b98a5;
+  font-size: 0.85rem;
+}
+.earnLockGate {
+  margin-top: 0.5rem;
+}
+.earnLockGate .smallInput {
+  display: block;
+  margin-top: 0.25rem;
+  min-width: 16rem;
+}
+.earnLockError {
+  color: #e74c3c;
+  margin: 0.5rem 0 0;
+  font-weight: 600;
+}
+.secondaryBtn {
+  background: #4a5568;
+  border-color: #2d3748;
+  color: #fff;
+}
+.secondaryBtn:hover {
+  background: #2d3748;
+}
 .earnSection a { color: #7eb8ff; }
 
 .userTempAccess {

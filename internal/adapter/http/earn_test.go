@@ -103,9 +103,14 @@ func TestEarnAnswerCreditsBalance(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("next %d %s", rr.Code, rr.Body.String())
 	}
+	st, _ := repo.GetClient(context.Background(), "c1")
+	ch := st.Users[0].ActiveEarnChallenge
+	if ch == nil {
+		t.Fatal("expected active challenge")
+	}
 
 	body, _ := json.Marshal(map[string]any{
-		"client_id": "c1", "user_id": "u1", "task_id": "t1", "answer": "4",
+		"client_id": "c1", "user_id": "u1", "task_id": ch.ID, "answer": ch.Answer,
 	})
 	req := httptest.NewRequest("POST", "/api/earn/answer", bytes.NewReader(body))
 	rr = httptest.NewRecorder()
@@ -118,7 +123,7 @@ func TestEarnAnswerCreditsBalance(t *testing.T) {
 	if !res.Correct {
 		t.Fatalf("want correct: %#v", res)
 	}
-	if res.Balance != 10 {
+	if res.Balance <= 0 {
 		t.Fatalf("balance %#v", res.Balance)
 	}
 

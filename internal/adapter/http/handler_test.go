@@ -58,6 +58,9 @@ func (m *mockRepo) IssueEarnChallenge(ctx context.Context, clientID, userID stri
 func (m *mockRepo) AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (domain.EarnAnswerResult, error) {
 	return domain.EarnAnswerResult{}, nil
 }
+func (m *mockRepo) SkipEarnChallenge(ctx context.Context, clientID, userID, taskID string) (domain.EarnAnswerResult, error) {
+	return domain.EarnAnswerResult{}, nil
+}
 func (m *mockRepo) RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error {
 	return nil
 }

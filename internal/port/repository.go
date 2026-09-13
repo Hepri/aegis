@@ -81,6 +81,9 @@ type ConfigRepository interface {
 	// AnswerEarnTask checks answer, credits wallet or applies wrong-answer lock.
 	AnswerEarnTask(ctx context.Context, clientID, userID, taskID, answer string) (domain.EarnAnswerResult, error)
 
+	// SkipEarnChallenge replaces the current question and applies the wrong-answer lock timer (no streak penalty).
+	SkipEarnChallenge(ctx context.Context, clientID, userID, taskID string) (domain.EarnAnswerResult, error)
+
 	// RedeemEarnMinutes spends wallet minutes and grants temporary access from now
 	RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error
 
