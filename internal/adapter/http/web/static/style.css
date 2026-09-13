@@ -103,6 +103,20 @@ li {
   gap: 0.5rem;
   margin-top: 0.75rem;
 }
+.earnLogBox {
+  margin-top: 1rem;
+  max-height: 420px;
+  overflow: auto;
+  border-top: 1px solid #2a3550;
+  padding-top: 0.75rem;
+}
+.earnLogItem {
+  padding: 0.55rem 0;
+  border-bottom: 1px solid #243044;
+  font-size: 0.92rem;
+}
+.earnLogPrompt { color: #c5d0da; margin-top: 0.2rem; }
+.earnLogAns { color: #9aa7b5; margin-top: 0.15rem; font-size: 0.88rem; }
 .earnBankBrowser {
   margin-top: 1.25rem;
   padding-top: 1rem;

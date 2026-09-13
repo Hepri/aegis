@@ -55,8 +55,17 @@
 
       <div class="redeem">
         <h2>Купить время</h2>
+        <p id="redeemHint" class="hint" hidden></p>
+        <div class="redeemCustom">
+          <label>Минут <input type="number" id="redeemMinutes" class="smallInput" min="1" step="1" value="15"></label>
+          <button type="button" id="redeemBuyBtn" class="primaryBtn">Купить</button>
+        </div>
         <div id="redeemButtons" class="btnRow"></div>
         <p id="redeemMsg" class="feedback" hidden></p>
+        <div id="activeSessionBox" class="activeSession" hidden>
+          <p id="activeSessionText" class="hint"></p>
+          <button type="button" id="refundSessionBtn" class="secondaryBtn">Закончить раньше и вернуть минуты</button>
+        </div>
       </div>
 
       <button type="button" id="exitBtnBottom" class="exitBtn exitBtnBottom">Выйти из Задачек</button>

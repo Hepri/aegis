@@ -3,6 +3,7 @@ package jsonfile
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -30,6 +31,7 @@ type persistedTempAccessRequest struct {
 	UserID string    `json:"user_id"`
 	Start  time.Time `json:"start"`
 	Until  time.Time `json:"until"`
+	Source string    `json:"source,omitempty"`
 }
 
 type persistedClient struct {
@@ -40,6 +42,7 @@ type persistedClient struct {
 	TemporaryAccessRequests []persistedTempAccessRequest `json:"temporary_access_requests,omitempty"`
 	EarnTasks               []domain.EarnTask            `json:"earn_tasks,omitempty"`
 	EarnSettings            *domain.EarnSettings         `json:"earn_settings,omitempty"`
+	EarnLog                 []domain.EarnLogEntry        `json:"earn_log,omitempty"`
 }
 
 type persistedUser struct {
@@ -75,6 +78,7 @@ type clientState struct {
 	TemporaryAccessRequests []port.TemporaryAccessRequest
 	EarnTasks               []domain.EarnTask
 	EarnSettings            domain.EarnSettings
+	EarnLog                 []domain.EarnLogEntry
 	LastSentIntervals       map[string][]domain.AllowedInterval
 	LastSentVersion         string
 	ComputedConfig          *domain.ClientConfig
@@ -143,7 +147,7 @@ func (r *Repository) load() error {
 			if id == "" {
 				id = uuid.New().String()
 			}
-			tempReqs = append(tempReqs, port.TemporaryAccessRequest{ID: id, UserID: t.UserID, Start: t.Start, Until: t.Until})
+			tempReqs = append(tempReqs, port.TemporaryAccessRequest{ID: id, UserID: t.UserID, Start: t.Start, Until: t.Until, Source: t.Source})
 		}
 		settings := domain.DefaultEarnSettings()
 		if pc.EarnSettings != nil {
@@ -161,6 +165,7 @@ func (r *Repository) load() error {
 			TemporaryAccessRequests: tempReqs,
 			EarnTasks:               tasks,
 			EarnSettings:            settings,
+			EarnLog:                 append([]domain.EarnLogEntry(nil), pc.EarnLog...),
 		}
 	}
 	return nil
@@ -209,7 +214,7 @@ func (r *Repository) saveLocked() error {
 			if id == "" {
 				id = uuid.New().String()
 			}
-			tempReqs = append(tempReqs, persistedTempAccessRequest{ID: id, UserID: t.UserID, Start: t.Start, Until: t.Until})
+			tempReqs = append(tempReqs, persistedTempAccessRequest{ID: id, UserID: t.UserID, Start: t.Start, Until: t.Until, Source: t.Source})
 		}
 		settings := cs.EarnSettings
 		pd.Clients[id] = persistedClient{
@@ -220,6 +225,7 @@ func (r *Repository) saveLocked() error {
 			TemporaryAccessRequests: tempReqs,
 			EarnTasks:               append([]domain.EarnTask(nil), cs.EarnTasks...),
 			EarnSettings:            &settings,
+			EarnLog:                 append([]domain.EarnLogEntry(nil), cs.EarnLog...),
 		}
 	}
 
@@ -324,6 +330,7 @@ func (r *Repository) toPortState(cs *clientState) *port.ClientState {
 		TemporaryAccessRequests: tempReqs,
 		EarnTasks:               tasks,
 		EarnSettings:            cs.EarnSettings,
+		EarnLog:                 append([]domain.EarnLogEntry(nil), cs.EarnLog...),
 		LastSentIntervals:       lastSent,
 		LastSentVersion:         cs.LastSentVersion,
 		ComputedConfig:          cs.ComputedConfig,
@@ -360,6 +367,7 @@ func (r *Repository) SaveClient(ctx context.Context, client *port.ClientState) e
 		TemporaryAccessRequests: append([]port.TemporaryAccessRequest(nil), client.TemporaryAccessRequests...),
 		EarnTasks:               append([]domain.EarnTask(nil), client.EarnTasks...),
 		EarnSettings:            client.EarnSettings,
+		EarnLog:                 append([]domain.EarnLogEntry(nil), client.EarnLog...),
 		LastSentIntervals:       client.LastSentIntervals,
 		LastSentVersion:         client.LastSentVersion,
 		ComputedConfig:          &config,
@@ -588,6 +596,8 @@ func (r *Repository) IssueEarnChallenge(ctx context.Context, clientID, userID st
 	// Drop sticky challenge if its bank/subject was disabled in settings.
 	if u.ActiveEarnChallenge != nil && u.ActiveEarnChallenge.ID != "" {
 		if settings.ChallengeAllowed(*u.ActiveEarnChallenge) {
+			// Keep prompt sticky, but refresh reward from live settings.
+			u.ActiveEarnChallenge.RewardMinutes = settings.DefaultRewardMinutes
 			pub := u.ActiveEarnChallenge.Public()
 			return &pub, lockLeft, nil
 		}
@@ -700,9 +710,9 @@ func (r *Repository) AnswerEarnTask(ctx context.Context, clientID, userID, taskI
 		return domain.EarnAnswerResult{Balance: u.EarnBalanceMinutes}, domain.ErrTaskNotFound
 	}
 	ch := u.ActiveEarnChallenge
-	reward := ch.RewardMinutes
+	reward := settings.DefaultRewardMinutes
 	if reward <= 0 {
-		reward = settings.DefaultRewardMinutes
+		reward = 1
 	}
 
 	if !answersMatch(ch.Answer, answer) {
@@ -716,6 +726,13 @@ func (r *Repository) AnswerEarnTask(ctx context.Context, clientID, userID, taskI
 			WrongCount:     ch.WrongCount,
 			WrongStreakMax: settings.WrongStreakLimit,
 		}
+		r.appendEarnLogLocked(cs, domain.EarnLogEntry{
+			UserID: u.ID, UserName: u.Name, Kind: domain.EarnLogAnswerWrong,
+			MinutesDelta: 0, BalanceAfter: u.EarnBalanceMinutes,
+			TaskID: ch.ID, Subject: ch.Subject, Prompt: ch.Prompt,
+			Answer: ch.Answer, GivenAnswer: answer,
+			Detail: "Неверный ответ",
+		})
 		if ch.WrongCount >= settings.WrongStreakLimit {
 			penalty := settings.WrongStreakPenaltyMinutes
 			if penalty > 0 {
@@ -733,6 +750,12 @@ func (r *Repository) AnswerEarnTask(ctx context.Context, clientID, userID, taskI
 			result.Balance = u.EarnBalanceMinutes
 			result.PenaltyMinutes = penalty
 			result.ReplaceQuestion = true
+			r.appendEarnLogLocked(cs, domain.EarnLogEntry{
+				UserID: u.ID, UserName: u.Name, Kind: domain.EarnLogPenalty,
+				MinutesDelta: -penalty, BalanceAfter: u.EarnBalanceMinutes,
+				TaskID: ch.ID, Subject: ch.Subject, Prompt: ch.Prompt,
+				Detail: "Штраф за серию ошибок + новая задача",
+			})
 		}
 		if err := r.saveLocked(); err != nil {
 			return domain.EarnAnswerResult{}, err
@@ -766,6 +789,13 @@ func (r *Repository) AnswerEarnTask(ctx context.Context, clientID, userID, taskI
 		}
 	}
 	u.ActiveEarnChallenge = nil
+	r.appendEarnLogLocked(cs, domain.EarnLogEntry{
+		UserID: u.ID, UserName: u.Name, Kind: domain.EarnLogAnswerCorrect,
+		MinutesDelta: reward, BalanceAfter: u.EarnBalanceMinutes,
+		TaskID: ch.ID, Subject: ch.Subject, Prompt: ch.Prompt,
+		Answer: ch.Answer, GivenAnswer: answer,
+		Detail: "Верный ответ",
+	})
 	if err := r.saveLocked(); err != nil {
 		return domain.EarnAnswerResult{}, err
 	}
@@ -837,6 +867,13 @@ func (r *Repository) SkipEarnChallenge(ctx context.Context, clientID, userID, ta
 	if next, ok := r.newChallengeLocked(cs, u, settings, now, skipBank); ok {
 		u.ActiveEarnChallenge = cloneChallenge(&next)
 	}
+	r.appendEarnLogLocked(cs, domain.EarnLogEntry{
+		UserID: u.ID, UserName: u.Name, Kind: domain.EarnLogSkip,
+		MinutesDelta: -penalty, BalanceAfter: u.EarnBalanceMinutes,
+		TaskID: ch.ID, Subject: ch.Subject, Prompt: ch.Prompt,
+		Answer: ch.Answer,
+		Detail: "Пропуск задачи",
+	})
 	if err := r.saveLocked(); err != nil {
 		return domain.EarnAnswerResult{}, err
 	}
@@ -860,19 +897,23 @@ func cloneChallenge(c *domain.EarnChallenge) *domain.EarnChallenge {
 	return &cp
 }
 
-func (r *Repository) RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error {
+func (r *Repository) RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) (domain.EarnRedeemResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if minutes <= 0 {
-		return domain.ErrInvalidMinutes
+		return domain.EarnRedeemResult{}, domain.ErrInvalidMinutes
 	}
 	cs, ok := r.clients[clientID]
 	if !ok {
-		return domain.ErrClientNotFound
+		return domain.EarnRedeemResult{}, domain.ErrClientNotFound
 	}
 	settings := domain.ResolveEarnSettings(cs.EarnSettings)
 	if settings.DisableRedeem {
-		return domain.ErrRedeemDisabled
+		return domain.EarnRedeemResult{}, domain.ErrRedeemDisabled
+	}
+	now := r.now()
+	if err := domain.ValidateRedeemMinutes(now, minutes); err != nil {
+		return domain.EarnRedeemResult{}, err
 	}
 	userIdx := -1
 	for i := range cs.Users {
@@ -882,20 +923,21 @@ func (r *Repository) RedeemEarnMinutes(ctx context.Context, clientID, userID str
 		}
 	}
 	if userIdx < 0 {
-		return domain.ErrUserNotFound
+		return domain.EarnRedeemResult{}, domain.ErrUserNotFound
 	}
 	u := &cs.Users[userIdx]
 	if u.EarnBalanceMinutes < minutes {
-		return domain.ErrInsufficientBalance
+		return domain.EarnRedeemResult{}, domain.ErrInsufficientBalance
 	}
 	u.EarnBalanceMinutes -= minutes
-	now := r.now()
 	until := now.Add(time.Duration(minutes) * time.Minute)
+	av := domain.RedeemAvailabilityAt(now)
 	cs.TemporaryAccessRequests = append(cs.TemporaryAccessRequests, port.TemporaryAccessRequest{
 		ID:     uuid.New().String(),
 		UserID: userID,
 		Start:  now,
 		Until:  until,
+		Source: domain.TempAccessSourceEarn,
 	})
 	if len(cs.TemporaryAccessRequests) > maxRequests {
 		cs.TemporaryAccessRequests = cs.TemporaryAccessRequests[len(cs.TemporaryAccessRequests)-maxRequests:]
@@ -904,8 +946,105 @@ func (r *Repository) RedeemEarnMinutes(ctx context.Context, clientID, userID str
 	state := r.toPortState(cs)
 	config, _ := server.ComputeClientConfig(r.now(), state, true)
 	cs.ComputedConfig = &config
+	msg := fmt.Sprintf("Куплено %d мин — войди в свой аккаунт (до %s)", minutes, until.Format("15:04"))
+	r.appendEarnLogLocked(cs, domain.EarnLogEntry{
+		UserID: u.ID, UserName: u.Name, Kind: domain.EarnLogRedeem,
+		MinutesDelta: -minutes, BalanceAfter: u.EarnBalanceMinutes,
+		Detail: msg,
+	})
 	r.notify(clientID)
-	return r.saveLocked()
+	if err := r.saveLocked(); err != nil {
+		return domain.EarnRedeemResult{}, err
+	}
+	return domain.EarnRedeemResult{
+		Minutes:    minutes,
+		Until:      until,
+		Balance:    u.EarnBalanceMinutes,
+		Message:    msg,
+		MaxAllowed: av.MaxMinutes,
+	}, nil
+}
+
+func (r *Repository) RefundEarnSession(ctx context.Context, clientID, userID string) (domain.EarnRefundResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cs, ok := r.clients[clientID]
+	if !ok {
+		return domain.EarnRefundResult{}, domain.ErrClientNotFound
+	}
+	userIdx := -1
+	for i := range cs.Users {
+		if cs.Users[i].ID == userID {
+			userIdx = i
+			break
+		}
+	}
+	if userIdx < 0 {
+		return domain.EarnRefundResult{}, domain.ErrUserNotFound
+	}
+	u := &cs.Users[userIdx]
+	now := r.now()
+	var maxUntil time.Time
+	kept := make([]port.TemporaryAccessRequest, 0, len(cs.TemporaryAccessRequests))
+	for _, t := range cs.TemporaryAccessRequests {
+		if t.UserID != userID || t.Source != domain.TempAccessSourceEarn || !t.Until.After(now) {
+			kept = append(kept, t)
+			continue
+		}
+		if t.Until.After(maxUntil) {
+			maxUntil = t.Until
+		}
+		// Drop active earn sessions (ended early).
+	}
+	if !maxUntil.After(now) {
+		return domain.EarnRefundResult{}, domain.ErrNoEarnSession
+	}
+	remaining := int(maxUntil.Sub(now) / time.Minute)
+	if remaining < 1 {
+		return domain.EarnRefundResult{}, domain.ErrNoEarnSession
+	}
+	cs.TemporaryAccessRequests = kept
+	u.EarnBalanceMinutes += remaining
+	cs.LastSentVersion = uuid.New().String()
+	state := r.toPortState(cs)
+	config, _ := server.ComputeClientConfig(now, state, true)
+	cs.ComputedConfig = &config
+	msg := fmt.Sprintf("Сессия завершена раньше: возвращено %d мин на баланс", remaining)
+	r.appendEarnLogLocked(cs, domain.EarnLogEntry{
+		UserID: u.ID, UserName: u.Name, Kind: domain.EarnLogRefund,
+		MinutesDelta: remaining, BalanceAfter: u.EarnBalanceMinutes,
+		Detail: msg,
+	})
+	r.notify(clientID)
+	if err := r.saveLocked(); err != nil {
+		return domain.EarnRefundResult{}, err
+	}
+	return domain.EarnRefundResult{
+		RefundedMinutes: remaining,
+		Balance:         u.EarnBalanceMinutes,
+		Message:         msg,
+		EndedAt:         now,
+	}, nil
+}
+
+func activeEarnAccessLocked(cs *clientState, userID string, now time.Time) *domain.ActiveEarnAccess {
+	var maxUntil time.Time
+	for _, t := range cs.TemporaryAccessRequests {
+		if t.UserID != userID || t.Source != domain.TempAccessSourceEarn {
+			continue
+		}
+		if t.Until.After(now) && t.Until.After(maxUntil) {
+			maxUntil = t.Until
+		}
+	}
+	if !maxUntil.After(now) {
+		return nil
+	}
+	rem := int(maxUntil.Sub(now) / time.Minute)
+	if rem < 1 {
+		return nil
+	}
+	return &domain.ActiveEarnAccess{RemainingMinutes: rem, Until: maxUntil}
 }
 
 func (r *Repository) ClearEarnBalances(ctx context.Context, clientID string) error {
@@ -916,10 +1055,53 @@ func (r *Repository) ClearEarnBalances(ctx context.Context, clientID string) err
 		return domain.ErrClientNotFound
 	}
 	for i := range cs.Users {
+		before := cs.Users[i].EarnBalanceMinutes
 		cs.Users[i].EarnBalanceMinutes = 0
 		cs.Users[i].EarnDayStats = domain.EarnDayStats{}
+		if before != 0 {
+			r.appendEarnLogLocked(cs, domain.EarnLogEntry{
+				UserID: cs.Users[i].ID, UserName: cs.Users[i].Name,
+				Kind: domain.EarnLogClearBalance, MinutesDelta: -before, BalanceAfter: 0,
+				Detail: "Сброс баланса администратором",
+			})
+		}
 	}
 	return r.saveLocked()
+}
+
+func (r *Repository) ListEarnLog(ctx context.Context, clientID string, limit int) ([]domain.EarnLogEntry, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	cs, ok := r.clients[clientID]
+	if !ok {
+		return nil, domain.ErrClientNotFound
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	n := len(cs.EarnLog)
+	if n == 0 {
+		return []domain.EarnLogEntry{}, nil
+	}
+	// Newest first (append order is oldest→newest).
+	out := make([]domain.EarnLogEntry, 0, limit)
+	for i := n - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, cs.EarnLog[i])
+	}
+	return out, nil
+}
+
+func (r *Repository) appendEarnLogLocked(cs *clientState, e domain.EarnLogEntry) {
+	if e.ID == "" {
+		e.ID = uuid.New().String()
+	}
+	if e.At.IsZero() {
+		e.At = r.now()
+	}
+	cs.EarnLog = append(cs.EarnLog, e)
+	if len(cs.EarnLog) > domain.MaxEarnLogEntries {
+		cs.EarnLog = cs.EarnLog[len(cs.EarnLog)-domain.MaxEarnLogEntries:]
+	}
 }
 
 func answersMatch(expected, got string) bool {

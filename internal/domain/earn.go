@@ -17,6 +17,9 @@ var (
 	ErrInvalidMinutes      = errors.New("minutes must be positive")
 	ErrEarnLocked          = errors.New("earn locked after wrong answer")
 	ErrRedeemDisabled      = errors.New("redeem disabled")
+	ErrRedeemCurfew        = errors.New("redeem not allowed between 00:00 and 08:00")
+	ErrRedeemTooLong       = errors.New("redeem would cover quiet hours 00:00–08:00")
+	ErrNoEarnSession       = errors.New("no active earn session to refund")
 )
 
 const (
@@ -174,9 +177,8 @@ func (s EarnSettings) ChallengeAllowed(ch EarnChallenge) bool {
 }
 
 func EffectiveReward(task EarnTask, settings EarnSettings) int {
-	if task.RewardMinutes > 0 {
-		return task.RewardMinutes
-	}
+	// Admin "minutes per task" is authoritative; built-in bank used to hardcode 1.
+	_ = task
 	return NormalizeEarnSettings(settings).DefaultRewardMinutes
 }
 

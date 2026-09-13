@@ -242,32 +242,106 @@ function bootUser(state) {
   if (redeemBox) redeemBox.hidden = !redeemOn;
 
   if (redeemOn) {
-    const opts = state.redeem_options || [5, 15, 30];
-    $('redeemButtons').innerHTML = opts.map((m) =>
-      `<button type="button" data-redeem="${m}">${m} мин</button>`
-    ).join('');
-    $('redeemButtons').onclick = async (e) => {
-      const btn = e.target.closest('[data-redeem]');
-      if (!btn || btn.disabled) return;
-      const minutes = Number(btn.dataset.redeem);
+    const maxMin = Number(state.redeem_max_minutes || 0);
+    const redeemAllowed = state.redeem_allowed !== false && maxMin > 0;
+    const hint = $('redeemHint');
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = state.redeem_hint || (redeemAllowed
+        ? `Можно купить до ${maxMin} мин (до 00:00)`
+        : 'Сейчас купить время нельзя');
+    }
+    const input = $('redeemMinutes');
+    if (input) {
+      input.max = String(Math.max(1, maxMin || 1));
+      const bal = Number(u ? u.balance_minutes : balance) || 0;
+      const def = Math.min(15, maxMin || 15, bal || 15);
+      input.value = String(Math.max(1, def));
+      input.disabled = !redeemAllowed;
+    }
+    const buy = async (minutes) => {
+      const m = Number(minutes);
+      if (!Number.isFinite(m) || m < 1) {
+        showFeedback($('redeemMsg'), false, 'Укажи число минут');
+        return;
+      }
+      if (redeemAllowed && m > maxMin) {
+        showFeedback($('redeemMsg'), false, `Нельзя: максимум ${maxMin} мин до 00:00 (ночь 00:00–08:00 закрыта)`);
+        return;
+      }
       try {
         const res = await api('/api/earn/redeem', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ client_id: clientId, user_id: userId, minutes })
+          body: JSON.stringify({ client_id: clientId, user_id: userId, minutes: m })
         });
         setBalance(res.balance_minutes);
-        showFeedback($('redeemMsg'), true, res.message || `Куплено ${minutes} мин`);
+        showFeedback($('redeemMsg'), true, res.message || `Куплено ${m} мин`);
+        // Refresh session refund UI
+        const st = await api(`/api/earn/state?client_id=${encodeURIComponent(clientId)}&user_id=${encodeURIComponent(userId)}`);
+        renderActiveSession(st.active_earn_access);
       } catch (err) {
         showFeedback($('redeemMsg'), false, err.message || 'Не удалось купить');
       }
     };
+    const buyBtn = $('redeemBuyBtn');
+    if (buyBtn) {
+      buyBtn.disabled = !redeemAllowed;
+      buyBtn.onclick = () => buy(input ? input.value : 0);
+    }
+    const opts = (state.redeem_options || [5, 15, 30]).filter((m) => !redeemAllowed || m <= maxMin);
+    $('redeemButtons').innerHTML = opts.map((m) =>
+      `<button type="button" data-redeem="${m}" ${redeemAllowed ? '' : 'disabled'}>${m} мин</button>`
+    ).join('');
+    $('redeemButtons').onclick = async (e) => {
+      const btn = e.target.closest('[data-redeem]');
+      if (!btn || btn.disabled) return;
+      buy(Number(btn.dataset.redeem));
+    };
   }
+
+  renderActiveSession(state.active_earn_access);
 
   if (u && u.lock_seconds > 0) {
     startLock(u.lock_seconds);
   }
   loadNextTask();
+}
+
+function renderActiveSession(access) {
+  const box = $('activeSessionBox');
+  const text = $('activeSessionText');
+  const btn = $('refundSessionBtn');
+  if (!box) return;
+  if (!access || !access.remaining_minutes) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const until = access.until ? new Date(access.until) : null;
+  const untilStr = until && !Number.isNaN(until.getTime())
+    ? until.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    : '';
+  text.textContent = untilStr
+    ? `Сейчас куплено: ещё ~${access.remaining_minutes} мин (до ${untilStr})`
+    : `Сейчас куплено: ещё ~${access.remaining_minutes} мин`;
+  if (btn) {
+    btn.onclick = async () => {
+      if (!confirm(`Закончить сессию раньше и вернуть ~${access.remaining_minutes} мин на баланс?`)) return;
+      try {
+        const res = await api('/api/earn/refund-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: clientId, user_id: userId })
+        });
+        setBalance(res.balance_minutes);
+        showFeedback($('redeemMsg'), true, res.message || `Возвращено ${res.refunded_minutes} мин`);
+        box.hidden = true;
+      } catch (err) {
+        showFeedback($('redeemMsg'), false, err.message || 'Не удалось вернуть');
+      }
+    };
+  }
 }
 
 async function loadNextTask() {

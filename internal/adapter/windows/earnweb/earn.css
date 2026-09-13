@@ -21,11 +21,33 @@ body {
   margin: 0 auto;
   padding: 2rem 1.25rem 3rem;
 }
-header h1 {
-  margin: 0 0 0.25rem;
+.earn header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.earn header h1 {
+  flex: 1 1 auto;
+  margin: 0;
   font-size: 1.75rem;
   font-weight: 650;
 }
+.exitBtn {
+  background: #3a4552 !important;
+  margin-left: auto;
+}
+.exitBtn:hover { background: #4a5562 !important; }
+.exitBtnBottom {
+  display: block;
+  width: 100%;
+  margin: 1.5rem 0 0;
+  margin-left: 0;
+  padding: 0.85rem 1rem;
+  background: #4a5562 !important;
+}
+
 .muted { color: var(--muted); }
 .card {
   background: var(--card);
@@ -46,9 +68,17 @@ header h1 {
   color: var(--accent);
 }
 .prompt {
-  font-size: 1.35rem;
-  line-height: 1.4;
+  font-size: 1.2rem;
+  line-height: 1.45;
   margin: 0 0 0.75rem;
+}
+.subjectTag {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
 }
 .reward { margin: 0 0 1rem; font-size: 0.9rem; }
 #answerForm {
@@ -89,6 +119,14 @@ button:disabled {
 }
 .redeem { margin-top: 1.75rem; padding-top: 1.25rem; border-top: 1px solid #343e4a; }
 .redeem h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
+.redeem .hint { margin: 0 0 0.75rem; color: #9aa7b5; font-size: 0.92rem; line-height: 1.35; }
+.redeemCustom { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.redeemCustom label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; color: #c5d0da; }
+.redeemCustom .smallInput { width: 6rem; padding: 0.45rem 0.55rem; border-radius: 8px; border: 1px solid #3a4552; background: #1a222c; color: #e8eef4; }
+.activeSession { margin-top: 1rem; padding-top: 0.85rem; border-top: 1px dashed #3a4552; display: flex; flex-direction: column; gap: 0.55rem; align-items: flex-start; }
+.secondaryBtn { padding: 0.55rem 0.9rem; border-radius: 10px; border: 1px solid #4a5868; background: #243040; color: #e8eef4; cursor: pointer; }
+.secondaryBtn:hover { background: #2c3a4c; }
+.primaryBtn { padding: 0.55rem 0.9rem; border-radius: 10px; border: 0; background: #3d8bfd; color: #fff; cursor: pointer; font-weight: 600; }
 .feedback { margin-top: 0.75rem; font-weight: 600; }
 .feedback.ok { color: var(--ok); }
 .feedback.bad { color: var(--bad); }
@@ -97,4 +135,47 @@ button:disabled {
 }
 .userBtn.active {
   background: var(--accent);
+}
+.small { font-size: 0.9rem; margin-top: 0; }
+.choiceRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  width: 100%;
+}
+.choiceBtn {
+  flex: 1 1 5.5rem;
+  background: #2f3945;
+  font-size: 0.95rem;
+  padding: 0.55rem 0.4rem;
+}
+.choiceBtn:hover { background: #3a4654; }
+.skipBtn {
+  margin-top: 0.75rem;
+  width: 100%;
+  background: #3a4552 !important;
+  font-weight: 600;
+}
+.skipBtn:hover { background: #4a5562 !important; }
+#answerForm {
+  flex-wrap: wrap;
+}
+.lockBanner {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin-top: 0.85rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  background: #2a3340;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+.lockBanner[hidden] { display: none !important; }
+.lockBanner strong {
+  font-size: 1.35rem;
+  color: var(--accent);
+  min-width: 1.5rem;
+  text-align: center;
 }

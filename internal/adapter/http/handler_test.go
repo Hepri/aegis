@@ -61,11 +61,17 @@ func (m *mockRepo) AnswerEarnTask(ctx context.Context, clientID, userID, taskID,
 func (m *mockRepo) SkipEarnChallenge(ctx context.Context, clientID, userID, taskID string) (domain.EarnAnswerResult, error) {
 	return domain.EarnAnswerResult{}, nil
 }
-func (m *mockRepo) RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error {
-	return nil
+func (m *mockRepo) RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) (domain.EarnRedeemResult, error) {
+	return domain.EarnRedeemResult{}, nil
+}
+func (m *mockRepo) RefundEarnSession(ctx context.Context, clientID, userID string) (domain.EarnRefundResult, error) {
+	return domain.EarnRefundResult{}, nil
 }
 func (m *mockRepo) ClearEarnBalances(ctx context.Context, clientID string) error {
 	return nil
+}
+func (m *mockRepo) ListEarnLog(ctx context.Context, clientID string, limit int) ([]domain.EarnLogEntry, error) {
+	return nil, nil
 }
 func (m *mockRepo) UpdateLastSent(ctx context.Context, clientID string, intervals map[string][]domain.AllowedInterval) error {
 	return nil

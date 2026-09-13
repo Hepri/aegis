@@ -21,6 +21,7 @@ type TemporaryAccessRequest struct {
 	UserID string    `json:"user_id"`
 	Start  time.Time `json:"start"`
 	Until  time.Time `json:"until"`
+	Source string    `json:"source,omitempty"` // domain.TempAccessSourceEarn for wallet purchases
 }
 
 // ClientState holds persistent and ephemeral data for a client
@@ -32,6 +33,7 @@ type ClientState struct {
 	TemporaryAccessRequests []TemporaryAccessRequest // last 10, persisted
 	EarnTasks               []domain.EarnTask        // shared task list (may be empty)
 	EarnSettings            domain.EarnSettings
+	EarnLog                 []domain.EarnLogEntry // recent wallet/challenge ops
 	LastSentIntervals       map[string][]domain.AllowedInterval
 	LastSentVersion         string
 	ComputedConfig          *domain.ClientConfig // precomputed intervals for today+tomorrow
@@ -84,11 +86,17 @@ type ConfigRepository interface {
 	// SkipEarnChallenge replaces the current question and applies the wrong-answer lock timer (no streak penalty).
 	SkipEarnChallenge(ctx context.Context, clientID, userID, taskID string) (domain.EarnAnswerResult, error)
 
-	// RedeemEarnMinutes spends wallet minutes and grants temporary access from now
-	RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) error
+	// RedeemEarnMinutes spends wallet minutes and grants temporary access from now.
+	RedeemEarnMinutes(ctx context.Context, clientID, userID string, minutes int) (domain.EarnRedeemResult, error)
+
+	// RefundEarnSession ends active earn-bought temp access and credits unused minutes back.
+	RefundEarnSession(ctx context.Context, clientID, userID string) (domain.EarnRefundResult, error)
 
 	// ClearEarnBalances zeroes earn wallet balances for all users on a client.
 	ClearEarnBalances(ctx context.Context, clientID string) error
+
+	// ListEarnLog returns recent earn wallet/challenge operations (newest first).
+	ListEarnLog(ctx context.Context, clientID string, limit int) ([]domain.EarnLogEntry, error)
 
 	// UpdateLastSent updates last sent intervals for change detection
 	UpdateLastSent(ctx context.Context, clientID string, intervals map[string][]domain.AllowedInterval) error

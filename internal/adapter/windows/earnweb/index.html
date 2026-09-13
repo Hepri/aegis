@@ -4,14 +4,21 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Aegis — Задачки</title>
-  <link rel="stylesheet" href="earn.css">
+  <link rel="stylesheet" href="/earn/earn.css">
 </head>
 <body>
   <main class="earn">
     <header>
       <h1>Задачки</h1>
       <p id="clientName" class="muted"></p>
+      <button type="button" id="exitBtn" class="exitBtn">Выйти</button>
     </header>
+
+    <section id="clientPick" class="card" hidden>
+      <h2>Выбери компьютер</h2>
+      <p class="muted small">Отладка из локальной сети — тот же экран, что у ребёнка</p>
+      <div id="clientButtons" class="btnRow"></div>
+    </section>
 
     <section id="userPick" class="card" hidden>
       <h2>Кто ты?</h2>
@@ -28,23 +35,43 @@
       <div id="taskBox">
         <p id="emptyTasks" class="muted" hidden>Пока нет задачек</p>
         <div id="taskContent" hidden>
+          <p id="taskSubject" class="subjectTag"></p>
           <p id="taskPrompt" class="prompt"></p>
-          <p class="reward muted">Награда: <span id="taskReward">0</span> мин</p>
+          <p class="reward muted">Награда: <span id="taskReward">0</span> мин · ошибок: <span id="wrongCount">0</span>/<span id="wrongMax">3</span></p>
           <form id="answerForm">
-            <input id="answerInput" type="text" autocomplete="off" placeholder="Ответ" required>
-            <button type="submit">Ответить</button>
+            <div id="choiceButtons" class="choiceRow" hidden></div>
+            <input id="answerInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Ответ">
+            <button type="submit" id="answerBtn">Ответить</button>
           </form>
+          <button type="button" id="skipBtn" class="skipBtn">Хочу другую задачу</button>
+          <div id="lockBanner" class="lockBanner" hidden>
+            <span id="lockHint">Подожди</span>
+            <strong id="lockSeconds">15</strong>
+            <span>с</span>
+          </div>
           <p id="answerFeedback" class="feedback" hidden></p>
         </div>
       </div>
 
       <div class="redeem">
         <h2>Купить время</h2>
+        <p id="redeemHint" class="hint" hidden></p>
+        <div class="redeemCustom">
+          <label>Минут <input type="number" id="redeemMinutes" class="smallInput" min="1" step="1" value="15"></label>
+          <button type="button" id="redeemBuyBtn" class="primaryBtn">Купить</button>
+        </div>
         <div id="redeemButtons" class="btnRow"></div>
         <p id="redeemMsg" class="feedback" hidden></p>
+        <div id="activeSessionBox" class="activeSession" hidden>
+          <p id="activeSessionText" class="hint"></p>
+          <button type="button" id="refundSessionBtn" class="secondaryBtn">Закончить раньше и вернуть минуты</button>
+        </div>
       </div>
+
+      <button type="button" id="exitBtnBottom" class="exitBtn exitBtnBottom">Выйти из Задачек</button>
     </section>
   </main>
-  <script src="earn.js"></script>
+
+  <script src="/earn/earn.js"></script>
 </body>
 </html>

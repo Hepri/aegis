@@ -119,6 +119,14 @@ button:disabled {
 }
 .redeem { margin-top: 1.75rem; padding-top: 1.25rem; border-top: 1px solid #343e4a; }
 .redeem h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
+.redeem .hint { margin: 0 0 0.75rem; color: #9aa7b5; font-size: 0.92rem; line-height: 1.35; }
+.redeemCustom { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.redeemCustom label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; color: #c5d0da; }
+.redeemCustom .smallInput { width: 6rem; padding: 0.45rem 0.55rem; border-radius: 8px; border: 1px solid #3a4552; background: #1a222c; color: #e8eef4; }
+.activeSession { margin-top: 1rem; padding-top: 0.85rem; border-top: 1px dashed #3a4552; display: flex; flex-direction: column; gap: 0.55rem; align-items: flex-start; }
+.secondaryBtn { padding: 0.55rem 0.9rem; border-radius: 10px; border: 1px solid #4a5868; background: #243040; color: #e8eef4; cursor: pointer; }
+.secondaryBtn:hover { background: #2c3a4c; }
+.primaryBtn { padding: 0.55rem 0.9rem; border-radius: 10px; border: 0; background: #3d8bfd; color: #fff; cursor: pointer; font-weight: 600; }
 .feedback { margin-top: 0.75rem; font-weight: 600; }
 .feedback.ok { color: var(--ok); }
 .feedback.bad { color: var(--bad); }

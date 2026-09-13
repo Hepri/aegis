@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/aegis/parental-control/internal/domain"
+	"github.com/aegis/parental-control/internal/port"
 )
 
 func (h *Handler) registerEarnRoutes(mux *http.ServeMux) {
@@ -17,8 +19,10 @@ func (h *Handler) registerEarnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/earn/answer", h.EarnAnswer)
 	mux.HandleFunc("POST /api/earn/skip", h.EarnSkip)
 	mux.HandleFunc("POST /api/earn/redeem", h.EarnRedeem)
+	mux.HandleFunc("POST /api/earn/refund-session", h.EarnRefundSession)
 	mux.HandleFunc("POST /api/earn-admin/unlock", h.EarnAdminUnlock)
 	mux.HandleFunc("GET /api/earn-admin/bank", h.EarnAdminBank)
+	mux.HandleFunc("GET /api/clients/{id}/earn-log", h.EarnLog)
 	mux.HandleFunc("PUT /api/clients/{id}/earn-settings", h.UpdateEarnSettings)
 	mux.HandleFunc("POST /api/clients/{id}/earn-balances/clear", h.ClearEarnBalances)
 }
@@ -117,21 +121,49 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	av := domain.RedeemAvailabilityAt(time.Now().In(h.loc))
 	resp := map[string]any{
-		"client_id":      state.ID,
-		"client_name":    state.Name,
-		"task_count":     len(state.EarnTasks),
-		"enabled_tasks":  countEnabledTasks(state.EarnTasks),
-		"earn_settings":  settings,
-		"redeem_enabled": !settings.DisableRedeem,
-		"users":          users,
-		"redeem_options": []int{5, 15, 30},
+		"client_id":          state.ID,
+		"client_name":        state.Name,
+		"task_count":         len(state.EarnTasks),
+		"enabled_tasks":      countEnabledTasks(state.EarnTasks),
+		"earn_settings":      settings,
+		"redeem_enabled":     !settings.DisableRedeem,
+		"users":              users,
+		"redeem_options":     []int{5, 15, 30},
+		"redeem_max_minutes": av.MaxMinutes,
+		"redeem_allowed":     av.Allowed,
+		"redeem_hint":        av.Message,
+		"redeem_until":       av.QuietUntil,
 	}
 	if selected != nil {
 		resp["user"] = selected
+		if acc := activeEarnAccessFromState(state, selected.ID, time.Now().In(h.loc)); acc != nil {
+			resp["active_earn_access"] = acc
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func activeEarnAccessFromState(state *port.ClientState, userID string, now time.Time) *domain.ActiveEarnAccess {
+	var maxUntil time.Time
+	for _, t := range state.TemporaryAccessRequests {
+		if t.UserID != userID || t.Source != domain.TempAccessSourceEarn {
+			continue
+		}
+		if t.Until.After(now) && t.Until.After(maxUntil) {
+			maxUntil = t.Until
+		}
+	}
+	if !maxUntil.After(now) {
+		return nil
+	}
+	rem := int(maxUntil.Sub(now) / time.Minute)
+	if rem < 1 {
+		return nil
+	}
+	return &domain.ActiveEarnAccess{RemainingMinutes: rem, Until: maxUntil}
 }
 
 func countEnabledTasks(tasks []domain.EarnTask) int {
@@ -260,7 +292,8 @@ func (h *Handler) EarnRedeem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.repo.RedeemEarnMinutes(r.Context(), req.ClientID, req.UserID, req.Minutes); err != nil {
+	result, err := h.repo.RedeemEarnMinutes(r.Context(), req.ClientID, req.UserID, req.Minutes)
+	if err != nil {
 		status := http.StatusBadRequest
 		switch {
 		case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrUserNotFound):
@@ -269,26 +302,85 @@ func (h *Handler) EarnRedeem(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		case errors.Is(err, domain.ErrRedeemDisabled):
 			status = http.StatusForbidden
+		case errors.Is(err, domain.ErrRedeemCurfew), errors.Is(err, domain.ErrRedeemTooLong):
+			status = http.StatusConflict
 		}
 		http.Error(w, err.Error(), status)
 		return
 	}
-	state, _ := h.repo.GetClient(r.Context(), req.ClientID)
-	balance := 0
-	if state != nil {
-		for _, u := range state.Users {
-			if u.ID == req.UserID {
-				balance = u.EarnBalanceMinutes
-				break
-			}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":                  true,
+		"minutes":             result.Minutes,
+		"balance_minutes":     result.Balance,
+		"until":               result.Until,
+		"message":             result.Message,
+		"max_allowed_minutes": result.MaxAllowed,
+	})
+}
+
+func (h *Handler) EarnRefundSession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ClientID string `json:"client_id"`
+		UserID   string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ClientID == "" || req.UserID == "" {
+		http.Error(w, "client_id and user_id required", http.StatusBadRequest)
+		return
+	}
+	result, err := h.repo.RefundEarnSession(r.Context(), req.ClientID, req.UserID)
+	if err != nil {
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrUserNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, domain.ErrNoEarnSession):
+			status = http.StatusConflict
 		}
+		http.Error(w, err.Error(), status)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"ok":              true,
-		"minutes":         req.Minutes,
-		"balance_minutes": balance,
-		"message":         "Время куплено — войди в свой аккаунт",
+		"ok":               true,
+		"refunded_minutes": result.RefundedMinutes,
+		"balance_minutes":  result.Balance,
+		"message":          result.Message,
+		"ended_at":         result.EndedAt,
+	})
+}
+
+func (h *Handler) EarnLog(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEarnAdmin(w, r) {
+		return
+	}
+	clientID := r.PathValue("id")
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	entries, err := h.repo.ListEarnLog(r.Context(), clientID, limit)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, domain.ErrClientNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"client_id": clientID,
+		"entries":   entries,
 	})
 }
 

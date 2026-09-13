@@ -421,8 +421,10 @@ function renderEarnSettings() {
     <div class="earnActions">
       <button type="button" id="saveEarnSettings" class="primaryBtn">Сохранить награды</button>
       <button type="button" id="clearEarnBalances" class="dangerBtn">Стереть накопленное время</button>
+      <button type="button" id="loadEarnLog" class="secondaryBtn">Журнал операций</button>
       <button type="button" id="lockEarnSettings" class="secondaryBtn">Закрыть раздел</button>
     </div>
+    <div id="earnLogBox" class="earnLogBox" hidden></div>
   `;
   document.getElementById('saveEarnSettings').onclick = async () => {
     try {
@@ -472,6 +474,52 @@ function renderEarnSettings() {
     currentClient = await getClient(currentClientId);
     renderEarnSettings();
     renderUsers();
+  };
+  document.getElementById('loadEarnLog').onclick = async () => {
+    const box = document.getElementById('earnLogBox');
+    if (!box) return;
+    const res = await fetch(`${API}/clients/${currentClientId}/earn-log?limit=100`, {
+      headers: earnAdminHeaders()
+    });
+    if (res.status === 401) {
+      clearEarnAdminSession();
+      alert('Нужен пароль раздела задачек');
+      renderEarnSettings();
+      return;
+    }
+    if (!res.ok) {
+      alert(await res.text() || 'Не удалось загрузить журнал');
+      return;
+    }
+    const data = await res.json();
+    const entries = data.entries || [];
+    box.hidden = false;
+    if (!entries.length) {
+      box.innerHTML = '<p class="configPreviewHint">Журнал пуст</p>';
+      return;
+    }
+    const kindLabel = {
+      answer_correct: 'верно',
+      answer_wrong: 'ошибка',
+      penalty: 'штраф',
+      skip: 'пропуск',
+      redeem: 'покупка',
+      refund_session: 'возврат сессии',
+      clear_balance: 'сброс'
+    };
+    box.innerHTML = `<h3 class="configPreviewHint">Журнал (${entries.length})</h3>` + entries.map((e) => {
+      const when = e.at ? new Date(e.at).toLocaleString('ru-RU') : '';
+      const delta = e.minutes_delta > 0 ? `+${e.minutes_delta}` : String(e.minutes_delta || 0);
+      const q = e.prompt ? `<div class="earnLogPrompt">${escapeHtml(e.prompt)}</div>` : '';
+      const ans = (e.answer || e.given_answer)
+        ? `<div class="earnLogAns">ответ: ${escapeHtml(e.given_answer || '')}${e.answer ? ` → верный: ${escapeHtml(e.answer)}` : ''}</div>`
+        : '';
+      return `<div class="earnLogItem">
+        <div><strong>${kindLabel[e.kind] || e.kind}</strong> · ${escapeHtml(e.user_name || e.user_id || '')} · ${delta} мин · баланс ${e.balance_after}</div>
+        <div class="configPreviewHint">${when}${e.detail ? ' · ' + escapeHtml(e.detail) : ''}</div>
+        ${q}${ans}
+      </div>`;
+    }).join('');
   };
   document.getElementById('lockEarnSettings').onclick = () => {
     clearEarnAdminSession();
