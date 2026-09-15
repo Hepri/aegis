@@ -52,6 +52,12 @@ func (m *mockRepo) DeleteTemporaryAccessRequest(ctx context.Context, clientID, r
 func (m *mockRepo) UpdateEarnSettings(ctx context.Context, clientID string, settings domain.EarnSettings) error {
 	return nil
 }
+func (m *mockRepo) UpsertEarnTask(ctx context.Context, clientID string, task domain.EarnTask) (domain.EarnTask, error) {
+	return task, nil
+}
+func (m *mockRepo) DeleteEarnTask(ctx context.Context, clientID, taskID string) error {
+	return nil
+}
 func (m *mockRepo) IssueEarnChallenge(ctx context.Context, clientID, userID string) (*domain.EarnPublicTask, int, error) {
 	return nil, 0, nil
 }
@@ -69,6 +75,9 @@ func (m *mockRepo) RefundEarnSession(ctx context.Context, clientID, userID strin
 }
 func (m *mockRepo) ClearEarnBalances(ctx context.Context, clientID string) error {
 	return nil
+}
+func (m *mockRepo) AdjustEarnBalance(ctx context.Context, clientID, userID string, delta int) (int, error) {
+	return 0, nil
 }
 func (m *mockRepo) ListEarnLog(ctx context.Context, clientID string, limit int) ([]domain.EarnLogEntry, error) {
 	return nil, nil

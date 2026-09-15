@@ -392,13 +392,32 @@ function renderEarnSettings() {
   const bankURL = `${location.origin}/earn/bank?client_id=${encodeURIComponent(currentClientId)}`;
   box.innerHTML = `
     <p class="configPreviewHint">Ребёнок / LAN: <a href="${earnURL}" target="_blank" rel="noopener">${earnURL}</a></p>
-    <p class="configPreviewHint">Банк вопросов: <a href="${bankURL}" target="_blank" rel="noopener">${bankURL}</a></p>
-    <label>Минут за задачу
+    <p class="configPreviewHint">Банк вопросов: <a href="${bankURL}" target="_blank" rel="noopener">${bankURL}</a> — можно добавлять свои по разделам</p>
+    <label>Минут за задачу (по умолчанию)
       <input type="number" id="earnDefaultReward" min="1" max="120" value="${s.default_reward_minutes || 1}" class="smallInput">
     </label>
-    <label>Лимит заработка в день (мин)
+    <p class="configPreviewHint">По разделам: награда за верный / штраф за ошибку (пусто = дефолт / без штрафа раздела)</p>
+    <div class="earnBankToggles" id="earnSubjectRewards">
+      ${['математика', 'таблица умножения', 'английский', 'русский', 'окружающий мир', 'литература', 'мораль'].map((subj) => {
+        const rewards = s.subject_reward_minutes || {};
+        const wrongs = s.subject_wrong_penalty_minutes || {};
+        const rewardVal = rewards[subj] != null ? rewards[subj] : (subj === 'таблица умножения' ? 1 : '');
+        const wrongVal = wrongs[subj] != null ? wrongs[subj] : (subj === 'таблица умножения' ? 5 : '');
+        const id = subj.replace(/\s+/g, '_');
+        return `<label class="checkboxLabel">${subj}
+          +<input type="number" data-earn-reward="${subj}" id="earnReward_${id}" class="smallInput" min="1" max="120" placeholder="${s.default_reward_minutes || 1}" value="${rewardVal}">
+          −<input type="number" data-earn-wrong-penalty="${subj}" id="earnWrongSubj_${id}" class="smallInput" min="0" max="60" placeholder="0" value="${wrongVal}">
+        </label>`;
+      }).join('')}
+    </div>
+    <label>Лимит траты в день (мин)
       <input type="number" id="earnMaxPerDay" min="1" max="600" value="${s.max_earn_per_day || 120}" class="smallInput">
     </label>
+    <p class="configPreviewHint">Лимит считает только «Купить время», не заработок за задачи.</p>
+    <label>Максимум на балансе (мин)
+      <input type="number" id="earnMaxBalance" min="1" max="1440" value="${s.max_balance_minutes || 300}" class="smallInput">
+    </label>
+    <p class="configPreviewHint">Свыше лимита минуты за задачи не начисляются, пока баланс не уменьшится.</p>
     <label>Блокировка после ошибки (сек)
       <input type="number" id="earnWrongLock" min="1" max="600" value="${s.wrong_lock_seconds || 15}" class="smallInput">
     </label>
@@ -410,12 +429,24 @@ function renderEarnSettings() {
     </label>
     <label class="checkboxLabel"><input type="checkbox" id="earnMathGen" ${s.math_generator_enabled !== false ? 'checked' : ''}> Генератор математики (составные задачи)</label>
     <label class="checkboxLabel"><input type="checkbox" id="earnRedeemEnabled" ${s.disable_redeem ? '' : 'checked'}> Разрешить «Купить время»</label>
+    <p class="configPreviewHint">Окна покупки времени (пусто в день = нельзя купить; пусто всё = по умолчанию 08:00–00:00)</p>
+    <div id="redeemScheduleEditor" class="scheduleEditor"></div>
     <p class="configPreviewHint">Банки вопросов (выкл. = не выдавать)</p>
     <div class="earnBankToggles" id="earnBankToggles">
-      ${['математика', 'английский', 'русский', 'окружающий мир', 'литература'].map((subj) => {
+      ${['математика', 'таблица умножения', 'английский', 'русский', 'окружающий мир', 'литература', 'мораль'].map((subj) => {
         const on = !(Array.isArray(s.disabled_subjects) && s.disabled_subjects.includes(subj));
         const id = 'earnBank_' + subj.replace(/\s+/g, '_');
         return `<label class="checkboxLabel"><input type="checkbox" data-earn-bank="${subj}" id="${id}" ${on ? 'checked' : ''}> ${subj}</label>`;
+      }).join('')}
+    </div>
+    <p class="configPreviewHint">Повтор вопросов (решённые снова попадают в ротацию; по умолчанию — мораль и таблица умножения)</p>
+    <div class="earnBankToggles" id="earnRepeatToggles">
+      ${['математика', 'таблица умножения', 'английский', 'русский', 'окружающий мир', 'литература', 'мораль'].map((subj) => {
+        const repeats = Array.isArray(s.repeatable_subjects)
+          ? s.repeatable_subjects.includes(subj)
+          : (subj === 'мораль' || subj === 'таблица умножения');
+        const id = 'earnRepeat_' + subj.replace(/\s+/g, '_');
+        return `<label class="checkboxLabel"><input type="checkbox" data-earn-repeat="${subj}" id="${id}" ${repeats ? 'checked' : ''}> ${subj}</label>`;
       }).join('')}
     </div>
     <div class="earnActions">
@@ -431,15 +462,37 @@ function renderEarnSettings() {
       const disabledSubjects = [...document.querySelectorAll('#earnBankToggles input[data-earn-bank]')]
         .filter((el) => !el.checked)
         .map((el) => el.getAttribute('data-earn-bank'));
+      const repeatableSubjects = [...document.querySelectorAll('#earnRepeatToggles input[data-earn-repeat]')]
+        .filter((el) => el.checked)
+        .map((el) => el.getAttribute('data-earn-repeat'));
+      const subjectRewardMinutes = {};
+      document.querySelectorAll('#earnSubjectRewards input[data-earn-reward]').forEach((el) => {
+        const subj = el.getAttribute('data-earn-reward');
+        const n = Number(el.value);
+        if (subj && Number.isFinite(n) && n > 0) subjectRewardMinutes[subj] = n;
+      });
+      const subjectWrongPenaltyMinutes = {};
+      document.querySelectorAll('#earnSubjectRewards input[data-earn-wrong-penalty]').forEach((el) => {
+        const subj = el.getAttribute('data-earn-wrong-penalty');
+        const raw = String(el.value || '').trim();
+        if (!subj || raw === '') return;
+        const n = Number(raw);
+        if (Number.isFinite(n) && n >= 0) subjectWrongPenaltyMinutes[subj] = n;
+      });
       await updateEarnSettings(currentClientId, {
         default_reward_minutes: Number(document.getElementById('earnDefaultReward').value) || 1,
         max_earn_per_day: Number(document.getElementById('earnMaxPerDay').value) || 120,
+        max_balance_minutes: Number(document.getElementById('earnMaxBalance').value) || 300,
         wrong_lock_seconds: Number(document.getElementById('earnWrongLock').value) || 15,
         wrong_streak_limit: Number(document.getElementById('earnWrongStreak').value) || 3,
         wrong_streak_penalty_minutes: Number(document.getElementById('earnWrongPenalty').value) || 0,
         math_generator_enabled: document.getElementById('earnMathGen').checked,
         disable_redeem: !document.getElementById('earnRedeemEnabled').checked,
-        disabled_subjects: disabledSubjects
+        disabled_subjects: disabledSubjects,
+        repeatable_subjects: repeatableSubjects,
+        subject_reward_minutes: subjectRewardMinutes,
+        subject_wrong_penalty_minutes: subjectWrongPenaltyMinutes,
+        redeem_schedule: collectRedeemScheduleFromEditor()
       });
       currentClient = await getClient(currentClientId);
       renderEarnSettings();
@@ -505,7 +558,8 @@ function renderEarnSettings() {
       skip: 'пропуск',
       redeem: 'покупка',
       refund_session: 'возврат сессии',
-      clear_balance: 'сброс'
+      clear_balance: 'сброс',
+      adjust_balance: 'правка'
     };
     box.innerHTML = `<h3 class="configPreviewHint">Журнал (${entries.length})</h3>` + entries.map((e) => {
       const when = e.at ? new Date(e.at).toLocaleString('ru-RU') : '';
@@ -525,6 +579,79 @@ function renderEarnSettings() {
     clearEarnAdminSession();
     renderEarnSettings();
   };
+  renderRedeemScheduleEditor();
+}
+
+function defaultRedeemSchedule() {
+  const iv = [{ start: '08:00', end: '00:00' }];
+  const out = {};
+  days.forEach((d) => { out[d] = iv.map((x) => ({ ...x })); });
+  return out;
+}
+
+function renderRedeemScheduleEditor() {
+  const div = document.getElementById('redeemScheduleEditor');
+  if (!div || !currentClient) return;
+  let schedule = (currentClient.earn_settings && currentClient.earn_settings.redeem_schedule) || {};
+  const hasAny = days.some((d) => Array.isArray(schedule[d]) && schedule[d].length > 0);
+  if (!hasAny) schedule = defaultRedeemSchedule();
+  div.innerHTML = days.map((day) => {
+    const intervals = schedule[day] || [];
+    return `
+      <div class="schedule-day" data-day="${day}">
+        <label>${dayLabels[day] || day}</label>
+        ${intervals.map((iv) => `
+          <div class="interval" data-day="${day}">
+            <input type="time" value="${iv.start || '08:00'}" data-field="start">
+            <span>—</span>
+            <input type="time" value="${iv.end || '00:00'}" data-field="end">
+            <button type="button" class="redeemIvRemove" title="Удалить">×</button>
+          </div>
+        `).join('')}
+        <button type="button" class="redeemIvAdd" data-day="${day}">+</button>
+      </div>
+    `;
+  }).join('');
+  div.querySelectorAll('.redeemIvAdd').forEach((btn) => {
+    btn.onclick = () => {
+      const day = btn.getAttribute('data-day');
+      const dayEl = div.querySelector(`.schedule-day[data-day="${day}"]`);
+      if (!dayEl) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'interval';
+      wrap.dataset.day = day;
+      wrap.innerHTML = `
+        <input type="time" value="08:00" data-field="start">
+        <span>—</span>
+        <input type="time" value="00:00" data-field="end">
+        <button type="button" class="redeemIvRemove" title="Удалить">×</button>`;
+      btn.before(wrap);
+      wrap.querySelector('.redeemIvRemove').onclick = () => wrap.remove();
+    };
+  });
+  div.querySelectorAll('.redeemIvRemove').forEach((btn) => {
+    btn.onclick = () => btn.closest('.interval')?.remove();
+  });
+}
+
+function collectRedeemScheduleFromEditor() {
+  const div = document.getElementById('redeemScheduleEditor');
+  const schedule = {};
+  if (!div) return schedule;
+  days.forEach((day) => {
+    const dayEl = div.querySelector(`.schedule-day[data-day="${day}"]`);
+    if (!dayEl) return;
+    const intervals = [];
+    dayEl.querySelectorAll('.interval').forEach((intervalEl) => {
+      const start = intervalEl.querySelector('input[data-field="start"]');
+      const end = intervalEl.querySelector('input[data-field="end"]');
+      if (start && end && start.value && end.value) {
+        intervals.push({ start: start.value, end: end.value });
+      }
+    });
+    schedule[day] = intervals;
+  });
+  return schedule;
 }
 
 function wireEarnLockGate() {
@@ -598,6 +725,39 @@ async function renderConfigPreview() {
   div.innerHTML = html || '<p class="dayLabel">Нет интервалов доступа</p>';
 }
 
+async function adjustEarnBalance(userId, sign) {
+  if (!isEarnAdminUnlocked()) {
+    alert('Сначала разблокируйте раздел задачек');
+    return;
+  }
+  const el = document.getElementById('earnAdj_' + userId);
+  const n = Number(el && el.value);
+  if (!Number.isFinite(n) || n <= 0) {
+    alert('Укажите число минут больше нуля');
+    return;
+  }
+  const delta = Math.trunc(sign) * Math.trunc(n);
+  const res = await fetch(`${API}/clients/${currentClientId}/users/${userId}/earn-balance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...earnAdminHeaders() },
+    body: JSON.stringify({ delta })
+  });
+  if (res.status === 401) {
+    clearEarnAdminSession();
+    alert('Нужен пароль раздела задачек');
+    renderEarnSettings();
+    renderUsers();
+    return;
+  }
+  if (!res.ok) {
+    alert(await res.text() || 'Не удалось изменить баланс');
+    return;
+  }
+  currentClient = await getClient(currentClientId);
+  renderUsers();
+  renderEarnSettings();
+}
+
 function renderUsers() {
   const ul = document.getElementById('userList');
   ul.innerHTML = (currentClient.users || []).map(u => {
@@ -615,6 +775,12 @@ function renderUsers() {
           <span class="userName">${u.name}</span>
           <code>${u.username}</code>
           <span class="earnBalance">баланс: ${u.earn_balance_minutes || 0} мин</span>
+          ${isEarnAdminUnlocked() ? `
+          <span class="earnAdjust">
+            <input type="number" id="earnAdj_${u.id}" class="smallInput" min="1" max="600" value="5" title="Минут">
+            <button type="button" class="smallBtn" onclick="adjustEarnBalance('${u.id}', 1)" title="Добавить">+</button>
+            <button type="button" class="smallBtn" onclick="adjustEarnBalance('${u.id}', -1)" title="Убавить">−</button>
+          </span>` : ''}
         </div>
         <button onclick="deleteUserConfirm('${u.id}')" class="deleteBtn">×</button>
       </div>

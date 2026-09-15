@@ -66,9 +66,14 @@ async function api(path, opts) {
   return isJSON ? body : null;
 }
 
-function setBalance(n) {
+function setBalance(n, cap) {
   balance = n || 0;
   $('balance').textContent = String(balance);
+  const hint = $('balanceCapHint');
+  if (hint) {
+    const max = Number(cap != null ? cap : (earnSettings && earnSettings.max_balance_minutes)) || 0;
+    hint.textContent = max > 0 ? ` / ${max} мин` : ' мин';
+  }
   document.querySelectorAll('[data-redeem]').forEach((btn) => {
     const m = Number(btn.dataset.redeem);
     btn.disabled = balance < m;
@@ -266,7 +271,10 @@ function bootUser(state) {
         return;
       }
       if (redeemAllowed && m > maxMin) {
-        showFeedback($('redeemMsg'), false, `Нельзя: максимум ${maxMin} мин до 00:00 (ночь 00:00–08:00 закрыта)`);
+        const spent = Number((state.user && state.user.spent_today) || 0);
+        const limit = Number((state.user && state.user.spend_limit_today) || 0);
+        const spendNote = limit > 0 ? ` Сегодня уже потрачено ${spent} из ${limit} мин.` : '';
+        showFeedback($('redeemMsg'), false, `Нельзя: максимум ${maxMin} мин.${spendNote}`);
         return;
       }
       try {
@@ -390,15 +398,24 @@ async function submitAnswer(answer) {
     setBalance(res.balance_minutes);
     updateWrongUI(res.wrong_count);
     if (res.correct) {
-      showFeedback($('answerFeedback'), true, `Верно! +${res.reward_minutes || 0} мин`);
+      showFeedback($('answerFeedback'), true,
+        (res.reward_minutes || 0) > 0
+          ? `Верно! +${res.reward_minutes} мин`
+          : 'Верно! Баланс заполнен — минуты не начислены');
       setTimeout(loadNextTask, 500);
       return;
     }
     let msg = 'Неверно';
+    if (res.penalty_minutes > 0) {
+      msg = `Неверно (−${res.penalty_minutes} мин)`;
+    }
     if (res.replace_question) {
-      msg = `Слишком много ошибок (−${res.penalty_minutes || 0} мин). Новая задачка.`;
+      msg = res.penalty_minutes > 0
+        ? `Слишком много ошибок (−${res.penalty_minutes} мин). Новая задачка.`
+        : 'Слишком много ошибок. Новая задачка.';
     } else if (res.wrong_count && res.wrong_streak_max) {
-      msg = `Неверно (${res.wrong_count}/${res.wrong_streak_max})`;
+      msg = (res.penalty_minutes > 0 ? `Неверно (−${res.penalty_minutes} мин)` : 'Неверно') +
+        ` (${res.wrong_count}/${res.wrong_streak_max})`;
     }
     showFeedback($('answerFeedback'), false, msg);
     if (res.lock_seconds > 0) {

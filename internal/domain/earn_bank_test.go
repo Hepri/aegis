@@ -29,7 +29,11 @@ func TestBuiltInEarnBankChoiceQuality(t *testing.T) {
 		if task.Kind != EarnKindChoice {
 			continue
 		}
-		if len(task.Choices) != 12 {
+		if task.Subject == SubjectMoral {
+			if len(task.Choices) < 2 {
+				t.Errorf("%s: moral want ≥2 choices, got %d", task.ID, len(task.Choices))
+			}
+		} else if len(task.Choices) != 12 {
 			t.Errorf("%s: want 12 choices, got %d", task.ID, len(task.Choices))
 		}
 		hasAnswer := false

@@ -44,7 +44,11 @@ func TestBuiltInEarnBank_PerSubject100(t *testing.T) {
 			t.Fatalf("bad task: %+v", task)
 		}
 		if len(task.Choices) > 0 {
-			if len(task.Choices) < 10 || len(task.Choices) > 12 {
+			minChoices, maxChoices := 10, 12
+			if task.Subject == SubjectMoral {
+				minChoices, maxChoices = 2, 4
+			}
+			if len(task.Choices) < minChoices || len(task.Choices) > maxChoices {
 				t.Fatalf("%s choices=%d", task.ID, len(task.Choices))
 			}
 			found := false
@@ -63,6 +67,12 @@ func TestBuiltInEarnBank_PerSubject100(t *testing.T) {
 		if bySubj[need] != 100 {
 			t.Fatalf("%s count=%d want 100", need, bySubj[need])
 		}
+	}
+	if bySubj[SubjectMultiply] != 231 {
+		t.Fatalf("%s count=%d want 231 (121× + 110÷)", SubjectMultiply, bySubj[SubjectMultiply])
+	}
+	if bySubj[SubjectMoral] != 2 {
+		t.Fatalf("%s count=%d want 2", SubjectMoral, bySubj[SubjectMoral])
 	}
 }
 

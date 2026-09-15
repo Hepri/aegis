@@ -39,7 +39,8 @@ type DayActivity struct {
 	Sessions []SessionSummary `json:"sessions"`
 }
 
-// SessionSummary is one login–logout (or still-open) session with nested app usage.
+// SessionSummary is one unlocked usage segment (or a current lock-screen card)
+// with nested app totals for that segment only.
 type SessionSummary struct {
 	SessionID  uint32       `json:"session_id,omitempty"`
 	Username   string       `json:"username"`

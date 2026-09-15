@@ -140,7 +140,51 @@ func TestAggregateDayActivity_LockedNow(t *testing.T) {
 		{Type: domain.EventSessionLock, Timestamp: lock, Username: "kid", SessionID: 1},
 	}
 	agg := AggregateDayActivity(day, events, now)
-	if len(agg.Sessions) != 1 || !agg.Sessions[0].LockedNow {
-		t.Fatalf("want locked_now session, got %+v", agg.Sessions)
+	if len(agg.Sessions) != 2 {
+		t.Fatalf("want usage + locked segments, got %+v", agg.Sessions)
+	}
+	usage, locked := agg.Sessions[0], agg.Sessions[1]
+	if usage.Logout == nil || !usage.Logout.Equal(lock) || usage.DurationMs != time.Hour.Milliseconds() {
+		t.Fatalf("usage segment = %+v", usage)
+	}
+	if !locked.LockedNow || !locked.Login.Equal(lock) || locked.DurationMs != time.Hour.Milliseconds() {
+		t.Fatalf("locked segment = %+v", locked)
+	}
+}
+
+func TestAggregateDayActivity_SplitsOnLockUnlock(t *testing.T) {
+	loc := time.UTC
+	day := time.Date(2026, 8, 21, 0, 0, 0, 0, loc)
+	now := time.Date(2026, 8, 21, 18, 0, 0, 0, loc)
+	login := time.Date(2026, 8, 21, 10, 0, 0, 0, loc)
+	lock := time.Date(2026, 8, 21, 11, 0, 0, 0, loc)
+	unlock := time.Date(2026, 8, 21, 12, 0, 0, 0, loc)
+	logout := time.Date(2026, 8, 21, 13, 0, 0, 0, loc)
+	events := []domain.ActivityEvent{
+		{Type: domain.EventSessionLogin, Timestamp: login, Username: "kid", SessionID: 1},
+		{Type: domain.EventAppFocus, Timestamp: login.Add(5 * time.Minute), AppName: "Game", ExePath: "game.exe", Username: "kid", SessionID: 1},
+		{Type: domain.EventSessionLock, Timestamp: lock, Username: "kid", SessionID: 1},
+		{Type: domain.EventSessionUnlock, Timestamp: unlock, Username: "kid", SessionID: 1},
+		{Type: domain.EventAppFocus, Timestamp: unlock.Add(10 * time.Minute), AppName: "Chrome", ExePath: "chrome.exe", Username: "kid", SessionID: 1},
+		{Type: domain.EventSessionLogout, Timestamp: logout, Username: "kid", SessionID: 1},
+	}
+	agg := AggregateDayActivity(day, events, now)
+	if len(agg.Sessions) != 2 {
+		t.Fatalf("want 2 unlocked segments (lock gap omitted), got %d %+v", len(agg.Sessions), agg.Sessions)
+	}
+	a, b := agg.Sessions[0], agg.Sessions[1]
+	if a.DurationMs != time.Hour.Milliseconds() || b.DurationMs != time.Hour.Milliseconds() {
+		t.Fatalf("durations a=%d b=%d", a.DurationMs, b.DurationMs)
+	}
+	if len(a.Apps) != 1 || a.Apps[0].AppName != "Game" {
+		t.Fatalf("first segment apps=%+v", a.Apps)
+	}
+	if len(b.Apps) != 1 || b.Apps[0].AppName != "Chrome" {
+		t.Fatalf("second segment apps=%+v", b.Apps)
+	}
+	// Wall span login→logout is 3h; unlocked usage totals 2h.
+	total := a.DurationMs + b.DurationMs
+	if total != 2*time.Hour.Milliseconds() {
+		t.Fatalf("unlocked total=%d", total)
 	}
 }

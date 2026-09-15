@@ -82,6 +82,16 @@ li {
   color: #7eb8ff;
   font-size: 0.9rem;
 }
+.earnAdjust {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+.earnAdjust .smallInput {
+  width: 3.5rem;
+}
 .earnSection {
   margin: 1.25rem 0;
   padding: 1rem;

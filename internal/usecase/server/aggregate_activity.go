@@ -9,14 +9,12 @@ import (
 )
 
 type sessAcc struct {
-	sessionID  uint32
-	username   string
-	login      time.Time
-	logout     *time.Time
-	lockedAt   *time.Time
-	lockedMs   int64
-	appsOpen   map[string]*openApp
-	appTotals  map[string]*domain.AppSummary
+	sessionID uint32
+	username  string
+	segStart  time.Time // start of current unlocked usage; zero while locked
+	lockedAt  *time.Time
+	appsOpen  map[string]*openApp
+	appTotals map[string]*domain.AppSummary
 	focusStart *time.Time
 	focusApp   string
 	focusExe   string
@@ -61,16 +59,19 @@ func (s *sessAcc) closeFocus(at time.Time) {
 	s.focusStart = nil
 }
 
-func (s *sessAcc) toSummary(now time.Time) domain.SessionSummary {
-	end := now
-	if s.logout != nil {
-		end = *s.logout
-	}
-	lockedNow := s.logout == nil && s.lockedAt != nil
-	if s.lockedAt != nil {
-		s.lockedMs += end.Sub(*s.lockedAt).Milliseconds()
-		s.lockedAt = nil
-	}
+func (s *sessAcc) resetApps() {
+	s.appsOpen = map[string]*openApp{}
+	s.appTotals = map[string]*domain.AppSummary{}
+	s.focusStart = nil
+	s.focusApp = ""
+	s.focusExe = ""
+}
+
+func (s *sessAcc) unlocked() bool {
+	return !s.segStart.IsZero() && s.lockedAt == nil
+}
+
+func (s *sessAcc) takeAppSummaries(end time.Time) []domain.AppSummary {
 	for _, o := range s.appsOpen {
 		s.ensureApp(o.name, o.exe).OpenMs += end.Sub(o.opened).Milliseconds()
 	}
@@ -87,30 +88,68 @@ func (s *sessAcc) toSummary(now time.Time) domain.SessionSummary {
 		}
 		return apps[i].OpenMs > apps[j].OpenMs
 	})
+	s.appTotals = map[string]*domain.AppSummary{}
+	return apps
+}
 
-	return domain.SessionSummary{
+// flushUnlocked closes the current unlocked usage segment (duration excludes lock screen).
+func (s *sessAcc) flushUnlocked(at time.Time, stillOpen bool) *domain.SessionSummary {
+	if s.segStart.IsZero() {
+		return nil
+	}
+	end := at
+	if end.Before(s.segStart) {
+		end = s.segStart
+	}
+	apps := s.takeAppSummaries(end)
+	sum := domain.SessionSummary{
 		SessionID:  s.sessionID,
 		Username:   s.username,
-		Login:      s.login,
-		Logout:     s.logout,
-		DurationMs: end.Sub(s.login).Milliseconds(),
-		LockedMs:   s.lockedMs,
-		LockedNow:  lockedNow,
+		Login:      s.segStart,
+		DurationMs: end.Sub(s.segStart).Milliseconds(),
 		Apps:       apps,
 	}
+	if !stillOpen {
+		logout := end
+		sum.Logout = &logout
+	}
+	s.segStart = time.Time{}
+	return &sum
+}
+
+func (s *sessAcc) lockedSummary(now time.Time, stillOpen bool) domain.SessionSummary {
+	start := now
+	if s.lockedAt != nil {
+		start = *s.lockedAt
+	}
+	end := now
+	sum := domain.SessionSummary{
+		SessionID:  s.sessionID,
+		Username:   s.username,
+		Login:      start,
+		DurationMs: end.Sub(start).Milliseconds(),
+		LockedMs:   end.Sub(start).Milliseconds(),
+		LockedNow:  stillOpen,
+	}
+	if !stillOpen {
+		logout := end
+		sum.Logout = &logout
+		sum.LockedNow = false
+	}
+	return sum
 }
 
 func newSessAcc(sid uint32, username string, login time.Time) *sessAcc {
 	return &sessAcc{
 		sessionID: sid,
 		username:  username,
-		login:     login,
+		segStart:  login,
 		appsOpen:  map[string]*openApp{},
 		appTotals: map[string]*domain.AppSummary{},
 	}
 }
 
-// AggregateDayActivity builds sessions with nested per-app totals.
+// AggregateDayActivity builds usage segments (split on lock/unlock) with nested per-app totals.
 func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time.Time) domain.DayActivity {
 	dayStr := day.Format("2006-01-02")
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
@@ -128,44 +167,29 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 	})
 
 	openByID := map[uint32]*sessAcc{}
-	var closed []*sessAcc
+	var sessions []domain.SessionSummary
+
+	appendSeg := func(sum *domain.SessionSummary) {
+		if sum != nil {
+			sessions = append(sessions, *sum)
+		}
+	}
 
 	findByTime := func(username string, ts time.Time) *sessAcc {
 		for _, s := range openByID {
 			if username != "" && s.username != "" && !strings.EqualFold(s.username, username) {
 				continue
 			}
-			if !ts.Before(s.login) {
+			if s.unlocked() && !ts.Before(s.segStart) {
 				return s
 			}
-		}
-		for i := len(closed) - 1; i >= 0; i-- {
-			s := closed[i]
-			if username != "" && s.username != "" && !strings.EqualFold(s.username, username) {
-				continue
-			}
-			if ts.Before(s.login) {
-				continue
-			}
-			if s.logout != nil && ts.After(*s.logout) {
-				continue
-			}
-			return s
 		}
 		return nil
 	}
 
 	resolve := func(ev domain.ActivityEvent) *sessAcc {
 		if ev.SessionID != 0 {
-			if s := openByID[ev.SessionID]; s != nil {
-				if ev.Username == "" || strings.EqualFold(s.username, ev.Username) {
-					return s
-				}
-			}
-			for _, s := range closed {
-				if s.sessionID != ev.SessionID {
-					continue
-				}
+			if s := openByID[ev.SessionID]; s != nil && s.unlocked() {
 				if ev.Username == "" || strings.EqualFold(s.username, ev.Username) {
 					return s
 				}
@@ -175,12 +199,12 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 	}
 
 	closeOpen := func(s *sessAcc, at time.Time) {
-		logout := at
-		if logout.Before(s.login) {
-			logout = s.login
+		if s.lockedAt != nil {
+			sessions = append(sessions, s.lockedSummary(at, false))
+			s.lockedAt = nil
+		} else {
+			appendSeg(s.flushUnlocked(at, false))
 		}
-		s.logout = &logout
-		closed = append(closed, s)
 	}
 
 	for _, ev := range sorted {
@@ -205,27 +229,38 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 			openByID[ev.SessionID] = newSessAcc(ev.SessionID, ev.Username, ts)
 
 		case domain.EventSessionLock:
-			if s := openByID[ev.SessionID]; s != nil && s.lockedAt == nil {
-				t := ts
-				s.lockedAt = &t
+			s := openByID[ev.SessionID]
+			if s == nil || s.lockedAt != nil {
+				continue
 			}
+			appendSeg(s.flushUnlocked(ts, false))
+			t := ts
+			s.lockedAt = &t
+
 		case domain.EventSessionUnlock:
-			if s := openByID[ev.SessionID]; s != nil && s.lockedAt != nil {
-				s.lockedMs += ts.Sub(*s.lockedAt).Milliseconds()
-				s.lockedAt = nil
+			s := openByID[ev.SessionID]
+			if s == nil || s.lockedAt == nil {
+				continue
 			}
+			// Lock gap is visible between segments; do not emit a lock-only card after unlock.
+			s.lockedAt = nil
+			s.segStart = ts
+			s.resetApps()
+
 		case domain.EventSessionLogout:
 			s := openByID[ev.SessionID]
 			if s == nil {
-				s = newSessAcc(ev.SessionID, ev.Username, ts)
 				logout := ts
-				s.logout = &logout
-				closed = append(closed, s)
+				sessions = append(sessions, domain.SessionSummary{
+					SessionID:  ev.SessionID,
+					Username:   ev.Username,
+					Login:      ts,
+					Logout:     &logout,
+					DurationMs: 0,
+				})
 				continue
 			}
-			logout := ts
-			s.logout = &logout
-			closed = append(closed, s)
+			closeOpen(s, ts)
 			delete(openByID, ev.SessionID)
 
 		case domain.EventAppOpen:
@@ -281,12 +316,12 @@ func AggregateDayActivity(day time.Time, events []domain.ActivityEvent, now time
 		}
 	}
 
-	var sessions []domain.SessionSummary
-	for _, s := range closed {
-		sessions = append(sessions, s.toSummary(now))
-	}
 	for _, s := range openByID {
-		sessions = append(sessions, s.toSummary(now))
+		if s.lockedAt != nil {
+			sessions = append(sessions, s.lockedSummary(now, true))
+			continue
+		}
+		appendSeg(s.flushUnlocked(now, true))
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {

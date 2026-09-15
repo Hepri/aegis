@@ -58,6 +58,12 @@ func ListSessions() (map[uint32]client.SessionSnapshot, error) {
 				state = client.SessionActive
 			}
 		}
+		// Win+L often keeps WTSConnectState=Active; SessionFlags reports lock.
+		if state == client.SessionActive {
+			if locked, ok := getSessionLocked(sid); ok && locked {
+				state = client.SessionDisconnected
+			}
+		}
 
 		out[sid] = client.SessionSnapshot{
 			SessionID: sid,
@@ -87,6 +93,73 @@ func getSessionConnectState(sessionID uint32) (uint32, error) {
 		return 0, fmt.Errorf("no connect state")
 	}
 	return *(*uint32)(unsafe.Pointer(infoPtr)), nil
+}
+
+// WTSINFOEX SessionFlags (wtsapi32.h)
+const (
+	wtsSessionStateLock   = 0x00000000
+	wtsSessionStateUnlock = 0x00000001
+)
+
+// wtsInfoExLevel1W matches WTSINFOEX_LEVEL1_W (wtsapi32.h).
+type wtsInfoExLevel1W struct {
+	SessionId               uint32
+	SessionState            uint32
+	IncomingBytes           int64
+	OutgoingBytes           int64
+	IncomingFrames          int64
+	OutgoingFrames          int64
+	IncomingCompressedBytes int64
+	OutgoingCompressedBytes int64
+	WinStationName          [33]uint16
+	UserName                [21]uint16
+	DomainName              [18]uint16
+	LogonTime               int64
+	ConnectTime             int64
+	DisconnectTime          int64
+	LastInputTime           int64
+	CurrentTime             int64
+	SessionFlags            uint32
+}
+
+type wtsInfoExW struct {
+	Level uint32
+	_     uint32 // alignment before union on amd64
+	Data  wtsInfoExLevel1W
+}
+
+// getSessionLocked reports workstation lock via WTSSessionInfoEx.
+// ok=false when the query is unavailable (caller keeps connect-state result).
+func getSessionLocked(sessionID uint32) (locked bool, ok bool) {
+	var infoPtr uintptr
+	var bytes uint32
+	r1, _, _ := procWTSQuerySessionInformationW.Call(
+		WTS_CURRENT_SERVER_HANDLE,
+		uintptr(sessionID),
+		WTSSessionInfoEx,
+		uintptr(unsafe.Pointer(&infoPtr)),
+		uintptr(unsafe.Pointer(&bytes)),
+	)
+	if r1 == 0 || infoPtr == 0 {
+		return false, false
+	}
+	defer procWTSFreeMemory.Call(infoPtr)
+	need := uint32(unsafe.Offsetof(wtsInfoExW{}.Data.SessionFlags) + 4)
+	if bytes < need {
+		return false, false
+	}
+	ex := (*wtsInfoExW)(unsafe.Pointer(infoPtr))
+	if ex.Level != 1 {
+		return false, false
+	}
+	switch ex.Data.SessionFlags {
+	case wtsSessionStateLock:
+		return true, true
+	case wtsSessionStateUnlock:
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func getSessionLogonTime(sessionID uint32) time.Time {

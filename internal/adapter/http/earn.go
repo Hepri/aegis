@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -22,9 +23,12 @@ func (h *Handler) registerEarnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/earn/refund-session", h.EarnRefundSession)
 	mux.HandleFunc("POST /api/earn-admin/unlock", h.EarnAdminUnlock)
 	mux.HandleFunc("GET /api/earn-admin/bank", h.EarnAdminBank)
+	mux.HandleFunc("POST /api/clients/{id}/earn-tasks", h.UpsertEarnTask)
+	mux.HandleFunc("DELETE /api/clients/{id}/earn-tasks/{taskId}", h.DeleteEarnTask)
 	mux.HandleFunc("GET /api/clients/{id}/earn-log", h.EarnLog)
 	mux.HandleFunc("PUT /api/clients/{id}/earn-settings", h.UpdateEarnSettings)
 	mux.HandleFunc("POST /api/clients/{id}/earn-balances/clear", h.ClearEarnBalances)
+	mux.HandleFunc("POST /api/clients/{id}/users/{userId}/earn-balance", h.AdjustEarnBalance)
 }
 
 func (h *Handler) ServeEarnPage(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +75,11 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 		BalanceMinutes int    `json:"balance_minutes"`
 		AvailableTasks int    `json:"available_tasks"`
 		EarnedToday    int    `json:"earned_today"`
+		SpentToday     int    `json:"spent_today"`
+		SpendLimit     int    `json:"spend_limit_today"`
+		SpendLeft      int    `json:"spend_left_today"`
+		BalanceCap     int    `json:"balance_cap"`
+		BalanceRoom    int    `json:"balance_room"`
 		LockSeconds    int    `json:"lock_seconds,omitempty"`
 		WrongCount     int    `json:"wrong_count,omitempty"`
 	}
@@ -86,16 +95,35 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 		}
 		available := 0
 		for _, t := range domain.MergeEarnBanks(state.EarnTasks) {
-			if t.Enabled && !solved[t.ID] {
-				available++
+			if !t.Enabled {
+				continue
 			}
+			if domain.IsEarnBankSubject(t.Subject) && !settings.SubjectBankEnabled(t.Subject) {
+				continue
+			}
+			if solved[t.ID] && !settings.SubjectRepeats(t.Subject) {
+				continue
+			}
+			available++
 		}
 		if settings.MathGeneratorEnabled {
 			available++ // at least generator
 		}
 		earnedToday := 0
+		spentToday := 0
 		if u.EarnDayStats.Date == today {
 			earnedToday = u.EarnDayStats.EarnedMinutes
+			spentToday = u.EarnDayStats.SpentMinutes
+		}
+		spendLimit := settings.MaxEarnPerDay
+		spendLeft := spendLimit - spentToday
+		if spendLeft < 0 {
+			spendLeft = 0
+		}
+		balanceCap := settings.MaxBalanceMinutes
+		balanceRoom := balanceCap - u.EarnBalanceMinutes
+		if balanceRoom < 0 {
+			balanceRoom = 0
 		}
 		lockSec := 0
 		if u.EarnLockedUntil > nowUnix {
@@ -111,6 +139,11 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 			BalanceMinutes: u.EarnBalanceMinutes,
 			AvailableTasks: available,
 			EarnedToday:    earnedToday,
+			SpentToday:     spentToday,
+			SpendLimit:     spendLimit,
+			SpendLeft:      spendLeft,
+			BalanceCap:     balanceCap,
+			BalanceRoom:    balanceRoom,
 			LockSeconds:    lockSec,
 			WrongCount:     wrong,
 		}
@@ -121,7 +154,24 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	av := domain.RedeemAvailabilityAt(time.Now().In(h.loc))
+	av := domain.RedeemAvailabilityAt(time.Now().In(h.loc), settings.RedeemSchedule)
+	redeemMax := av.MaxMinutes
+	redeemAllowed := av.Allowed
+	redeemHint := av.Message
+	if selected != nil {
+		if selected.SpendLeft < redeemMax {
+			redeemMax = selected.SpendLeft
+		}
+		if selected.SpendLeft <= 0 {
+			redeemAllowed = false
+			redeemMax = 0
+			redeemHint = fmt.Sprintf("Дневной лимит траты исчерпан: уже потрачено %d из %d мин", selected.SpentToday, selected.SpendLimit)
+		} else if av.Allowed {
+			until := av.QuietUntil.Format("15:04")
+			redeemHint = fmt.Sprintf("Можно купить до %d мин (сегодня потрачено %d из %d; до %s)",
+				redeemMax, selected.SpentToday, selected.SpendLimit, until)
+		}
+	}
 	resp := map[string]any{
 		"client_id":          state.ID,
 		"client_name":        state.Name,
@@ -131,9 +181,9 @@ func (h *Handler) EarnState(w http.ResponseWriter, r *http.Request) {
 		"redeem_enabled":     !settings.DisableRedeem,
 		"users":              users,
 		"redeem_options":     []int{5, 15, 30},
-		"redeem_max_minutes": av.MaxMinutes,
-		"redeem_allowed":     av.Allowed,
-		"redeem_hint":        av.Message,
+		"redeem_max_minutes": redeemMax,
+		"redeem_allowed":     redeemAllowed && redeemMax > 0,
+		"redeem_hint":        redeemHint,
 		"redeem_until":       av.QuietUntil,
 	}
 	if selected != nil {
@@ -211,6 +261,12 @@ func (h *Handler) EarnNext(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) writeEarnError(w http.ResponseWriter, err error, status int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"message": err.Error()})
+}
+
 func (h *Handler) EarnAnswer(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ClientID string `json:"client_id"`
@@ -219,11 +275,11 @@ func (h *Handler) EarnAnswer(w http.ResponseWriter, r *http.Request) {
 		Answer   string `json:"answer"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.writeEarnError(w, fmt.Errorf("неверный запрос"), http.StatusBadRequest)
 		return
 	}
 	if req.ClientID == "" || req.UserID == "" || req.TaskID == "" {
-		http.Error(w, "client_id, user_id, task_id required", http.StatusBadRequest)
+		h.writeEarnError(w, fmt.Errorf("нужны client_id, user_id и task_id"), http.StatusBadRequest)
 		return
 	}
 	result, err := h.repo.AnswerEarnTask(r.Context(), req.ClientID, req.UserID, req.TaskID, req.Answer)
@@ -241,7 +297,7 @@ func (h *Handler) EarnAnswer(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, domain.ErrTaskAlreadySolved), errors.Is(err, domain.ErrDailyLimit):
 			status = http.StatusConflict
 		}
-		http.Error(w, err.Error(), status)
+		h.writeEarnError(w, err, status)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -289,7 +345,7 @@ func (h *Handler) EarnRedeem(w http.ResponseWriter, r *http.Request) {
 		Minutes  int    `json:"minutes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.writeEarnError(w, fmt.Errorf("неверный запрос"), http.StatusBadRequest)
 		return
 	}
 	result, err := h.repo.RedeemEarnMinutes(r.Context(), req.ClientID, req.UserID, req.Minutes)
@@ -298,14 +354,14 @@ func (h *Handler) EarnRedeem(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrUserNotFound):
 			status = http.StatusNotFound
-		case errors.Is(err, domain.ErrInsufficientBalance):
+		case errors.Is(err, domain.ErrInsufficientBalance), errors.Is(err, domain.ErrDailyLimit):
 			status = http.StatusConflict
 		case errors.Is(err, domain.ErrRedeemDisabled):
 			status = http.StatusForbidden
 		case errors.Is(err, domain.ErrRedeemCurfew), errors.Is(err, domain.ErrRedeemTooLong):
 			status = http.StatusConflict
 		}
-		http.Error(w, err.Error(), status)
+		h.writeEarnError(w, err, status)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -325,11 +381,11 @@ func (h *Handler) EarnRefundSession(w http.ResponseWriter, r *http.Request) {
 		UserID   string `json:"user_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.writeEarnError(w, fmt.Errorf("неверный запрос"), http.StatusBadRequest)
 		return
 	}
 	if req.ClientID == "" || req.UserID == "" {
-		http.Error(w, "client_id and user_id required", http.StatusBadRequest)
+		h.writeEarnError(w, fmt.Errorf("нужны client_id и user_id"), http.StatusBadRequest)
 		return
 	}
 	result, err := h.repo.RefundEarnSession(r.Context(), req.ClientID, req.UserID)
@@ -341,7 +397,7 @@ func (h *Handler) EarnRefundSession(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, domain.ErrNoEarnSession):
 			status = http.StatusConflict
 		}
-		http.Error(w, err.Error(), status)
+		h.writeEarnError(w, err, status)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -412,8 +468,13 @@ func (h *Handler) EarnAdminBank(w http.ResponseWriter, r *http.Request) {
 			clientTasks = st.EarnTasks
 		}
 	}
+	customIDs := map[string]bool{}
+	for _, t := range clientTasks {
+		customIDs[t.ID] = true
+	}
 	tasks := domain.MergeEarnBanks(clientTasks)
 	bySubject := map[string]int{}
+	customSubjects := map[string]bool{}
 	type taskView struct {
 		ID            string   `json:"id"`
 		Subject       string   `json:"subject"`
@@ -423,26 +484,100 @@ func (h *Handler) EarnAdminBank(w http.ResponseWriter, r *http.Request) {
 		Kind          string   `json:"kind"`
 		RewardMinutes int      `json:"reward_minutes"`
 		Source        string   `json:"source"`
+		Editable      bool     `json:"editable"`
+		Enabled       bool     `json:"enabled"`
 	}
-	views := make([]taskView, 0, len(tasks)+1)
+	views := make([]taskView, 0, len(tasks))
 	for _, t := range tasks {
 		subj := domain.SubjectLabel(t.Subject)
 		bySubject[subj]++
+		editable := customIDs[t.ID]
 		src := domain.EarnSourceBank
+		if editable {
+			src = domain.EarnSourceCustom
+			if !domain.IsEarnBankSubject(subj) {
+				customSubjects[subj] = true
+			}
+		}
 		views = append(views, taskView{
 			ID: t.ID, Subject: subj, Prompt: t.Prompt, Answer: t.Answer,
 			Choices: append([]string(nil), t.Choices...), Kind: domain.TaskKind(t),
-			RewardMinutes: t.RewardMinutes, Source: src,
+			RewardMinutes: t.RewardMinutes, Source: src, Editable: editable, Enabled: t.Enabled,
 		})
+	}
+	subjects := append([]string{}, domain.EarnBankSubjects()...)
+	for s := range customSubjects {
+		subjects = append(subjects, s)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"task_count":  len(views),
-		"by_subject":  bySubject,
-		"tasks":       views,
-		"math_note":  "Математика: 100 задач в банке + дополнительная генерация новых составных задач.",
-		"subjects":   []string{domain.SubjectMath, domain.SubjectEnglish, domain.SubjectRussian, domain.SubjectWorld, domain.SubjectLiterature},
+		"task_count":       len(views),
+		"custom_count":     len(clientTasks),
+		"by_subject":       bySubject,
+		"tasks":            views,
+		"math_note":        "Математика: 100 задач в банке + дополнительная генерация новых составных задач.",
+		"subjects":         subjects,
+		"builtin_subjects": domain.EarnBankSubjects(),
+		"client_id":        clientID,
 	})
+}
+
+func (h *Handler) UpsertEarnTask(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEarnAdmin(w, r) {
+		return
+	}
+	clientID := r.PathValue("id")
+	var req domain.EarnTask
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	task, err := h.repo.UpsertEarnTask(r.Context(), clientID, req)
+	if err != nil {
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, domain.ErrClientNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, domain.ErrBuiltinTask):
+			status = http.StatusForbidden
+		}
+		h.writeEarnError(w, err, status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"id":             task.ID,
+		"subject":        task.Subject,
+		"prompt":         task.Prompt,
+		"answer":         task.Answer,
+		"choices":        task.Choices,
+		"kind":           domain.TaskKind(task),
+		"reward_minutes": task.RewardMinutes,
+		"source":         domain.EarnSourceCustom,
+		"editable":       true,
+		"enabled":        task.Enabled,
+	})
+}
+
+func (h *Handler) DeleteEarnTask(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEarnAdmin(w, r) {
+		return
+	}
+	clientID := r.PathValue("id")
+	taskID := r.PathValue("taskId")
+	if err := h.repo.DeleteEarnTask(r.Context(), clientID, taskID); err != nil {
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrTaskNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, domain.ErrBuiltinTask):
+			status = http.StatusForbidden
+		}
+		h.writeEarnError(w, err, status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 func (h *Handler) UpdateEarnSettings(w http.ResponseWriter, r *http.Request) {
@@ -455,7 +590,7 @@ func (h *Handler) UpdateEarnSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.DefaultRewardMinutes < 0 || req.MaxEarnPerDay < 0 || req.WrongLockSeconds < 0 ||
+	if req.DefaultRewardMinutes < 0 || req.MaxEarnPerDay < 0 || req.MaxBalanceMinutes < 0 || req.WrongLockSeconds < 0 ||
 		req.WrongStreakLimit < 0 || req.WrongStreakPenaltyMinutes < 0 {
 		http.Error(w, "values must be non-negative", http.StatusBadRequest)
 		return
@@ -491,4 +626,39 @@ func (h *Handler) ClearEarnBalances(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (h *Handler) AdjustEarnBalance(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEarnAdmin(w, r) {
+		return
+	}
+	clientID := r.PathValue("id")
+	userID := r.PathValue("userId")
+	var req struct {
+		Delta int `json:"delta"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeEarnError(w, fmt.Errorf("неверный запрос"), http.StatusBadRequest)
+		return
+	}
+	if req.Delta == 0 {
+		h.writeEarnError(w, domain.ErrInvalidMinutes, http.StatusBadRequest)
+		return
+	}
+	balance, err := h.repo.AdjustEarnBalance(r.Context(), clientID, userID, req.Delta)
+	if err != nil {
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrUserNotFound):
+			status = http.StatusNotFound
+		}
+		h.writeEarnError(w, err, status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":               true,
+		"balance_minutes":  balance,
+		"delta":            req.Delta,
+	})
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 # Server IP: set DEPLOY_IP env or defaults to 192.168.0.234
 : "${DEPLOY_IP:=192.168.0.234}"
@@ -13,6 +13,25 @@ UNIT_NAME="aegis-server"
 
 # Version stamp for client OTA (override with CLIENT_VERSION=...)
 CLIENT_VERSION="${CLIENT_VERSION:-$(date -u +%Y%m%d%H%M%S)}"
+
+# Non-interactive sudo (requires passwordless sudoers; see deploy/sudoers.aegis).
+remote() {
+    ssh -n -o BatchMode=yes "$TARGET" "$@"
+}
+
+remote_sudo() {
+    remote "sudo -n $*"
+}
+
+require_sudo() {
+    if ! remote_sudo true >/dev/null 2>&1; then
+        echo "ERROR: passwordless sudo not available for $TARGET."
+        echo "Install once (interactive):"
+        echo "  scp $SCRIPT_DIR/sudoers.aegis $TARGET:/tmp/"
+        echo "  ssh -t $TARGET 'sudo cp /tmp/sudoers.aegis /etc/sudoers.d/aegis-deploy && sudo chmod 440 /etc/sudoers.d/aegis-deploy'"
+        exit 1
+    fi
+}
 
 build_server() {
     cd "$PROJECT_ROOT"
@@ -29,7 +48,6 @@ build_client_update() {
     mkdir -p "$PROJECT_ROOT/deploy/updates-staging"
     cp "$PROJECT_ROOT/aegis-client.exe" "$PROJECT_ROOT/deploy/updates-staging/aegis-client.exe"
 
-    # SHA256 (macOS shasum / Linux sha256sum)
     if command -v shasum >/dev/null 2>&1; then
         SHA=$(shasum -a 256 "$PROJECT_ROOT/deploy/updates-staging/aegis-client.exe" | awk '{print $1}')
     else
@@ -47,24 +65,50 @@ EOF
 }
 
 publish_client_update() {
-    ssh -t "$TARGET" "sudo mkdir -p $DEPLOY_PATH/updates && sudo chown $DEPLOY_USER:$DEPLOY_USER $DEPLOY_PATH/updates"
+    remote "mkdir -p $DEPLOY_PATH/updates"
     scp "$PROJECT_ROOT/deploy/updates-staging/aegis-client.exe" "$TARGET:$DEPLOY_PATH/updates/"
     scp "$PROJECT_ROOT/deploy/updates-staging/client.json" "$TARGET:$DEPLOY_PATH/updates/"
     echo "Client update published to $TARGET:$DEPLOY_PATH/updates/"
 }
 
+# Stop unit + any orphan aegis-server (old nohup), so :8080 is free.
+stop_server() {
+    remote_sudo "systemctl stop $UNIT_NAME" || true
+    # pgrep -x matches process name only — safe for this remote shell.
+    remote 'pids=$(pgrep -x aegis-server || true); if [ -n "$pids" ]; then echo "killing orphans: $pids"; kill -9 $pids || true; fi'
+    sleep 1
+}
+
+start_server() {
+    remote_sudo "systemctl start $UNIT_NAME"
+    sleep 1
+    if ! remote "curl -sf -o /dev/null --connect-timeout 2 http://127.0.0.1:8080/"; then
+        echo "server failed to answer on :8080"
+        remote_sudo "systemctl status $UNIT_NAME --no-pager -l" || true
+        remote "tail -n 30 $DEPLOY_PATH/server.log 2>/dev/null || true"
+        exit 1
+    fi
+    remote_sudo "systemctl is-active $UNIT_NAME"
+}
+
+install_unit() {
+    scp "$SCRIPT_DIR/aegis-server.service" "$TARGET:/tmp/aegis-server.service"
+    remote_sudo "mv /tmp/aegis-server.service /etc/systemd/system/$UNIT_NAME.service"
+    remote_sudo "systemctl daemon-reload"
+    remote_sudo "systemctl enable $UNIT_NAME"
+}
+
 deploy_initial() {
     echo "=== Initial deploy to $TARGET:$DEPLOY_PATH ==="
-
+    require_sudo
     build_server
     build_client_update
 
-    # Create directory, copy files, install systemd
-    ssh -t "$TARGET" "sudo mkdir -p $DEPLOY_PATH && sudo chown $DEPLOY_USER:$DEPLOY_USER $DEPLOY_PATH"
+    remote_sudo "mkdir -p $DEPLOY_PATH && chown $DEPLOY_USER:$DEPLOY_USER $DEPLOY_PATH"
     scp "$PROJECT_ROOT/aegis-server" "$TARGET:$DEPLOY_PATH/"
-    scp "$SCRIPT_DIR/aegis-server.service" "$TARGET:/tmp/"
-    ssh -t "$TARGET" "sudo mv /tmp/aegis-server.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable $UNIT_NAME && sudo systemctl start $UNIT_NAME"
-
+    remote "chmod +x $DEPLOY_PATH/aegis-server && mkdir -p $DEPLOY_PATH/updates"
+    install_unit
+    start_server
     publish_client_update
 
     echo "Initial deploy complete. Service $UNIT_NAME is running."
@@ -73,22 +117,16 @@ deploy_initial() {
 
 deploy_redeploy() {
     echo "=== Redeploy to $TARGET:$DEPLOY_PATH ==="
-
+    require_sudo
     build_server
     build_client_update
 
-    # Stop service, copy binary, start.
-    # Important: replace-on-disk while the old process still runs leaves the old
-    # binary mapped in memory — always stop/kill before the new process starts.
-    if ssh -t "$TARGET" "sudo systemctl stop $UNIT_NAME"; then
-        scp "$PROJECT_ROOT/aegis-server" "$TARGET:$DEPLOY_PATH/"
-        ssh -t "$TARGET" "sudo systemctl start $UNIT_NAME"
-    else
-        echo "systemctl stop failed; falling back to kill + nohup"
-        scp "$PROJECT_ROOT/aegis-server" "$TARGET:$DEPLOY_PATH/aegis-server.new"
-        ssh "$TARGET" "cd $DEPLOY_PATH && pid=\$(ps -eo pid=,args= | awk '/\\/opt\\/aegis\\/aegis-server( |\$)/{print \$1; exit}') && if [ -n \"\$pid\" ]; then kill -9 \$pid; fi && mv -f aegis-server.new aegis-server && chmod +x aegis-server && nohup ./aegis-server --data $DEPLOY_PATH/aegis-data.json --updates $DEPLOY_PATH/updates --port 8080 --timezone Asia/Yekaterinburg >>server.log 2>&1 &"
-    fi
-
+    stop_server
+    scp "$PROJECT_ROOT/aegis-server" "$TARGET:$DEPLOY_PATH/"
+    remote "chmod +x $DEPLOY_PATH/aegis-server"
+    # Keep unit file in sync (flags: --updates, timezone, …).
+    install_unit
+    start_server
     publish_client_update
 
     echo "Redeploy complete. Service $UNIT_NAME restarted."
@@ -110,7 +148,7 @@ case "${1:-redeploy}" in
     *)
         echo "Usage: $0 {initial|redeploy|client-only}"
         echo "  initial     - first-time setup: create dir, copy binary, install systemd, start"
-        echo "  redeploy    - update server + publish Windows client OTA package (default)"
+        echo "  redeploy    - systemctl stop → copy → start + publish Windows client OTA"
         echo "  client-only - only build/publish Windows client update"
         echo ""
         echo "Env: DEPLOY_IP, DEPLOY_USER, DEPLOY_PATH, CLIENT_VERSION"

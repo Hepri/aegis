@@ -13,6 +13,8 @@ func BuiltInEarnBank() []EarnTask {
 	out = append(out, worldBank()...)
 	out = append(out, literatureBank()...)
 	out = append(out, mathBank()...)
+	out = append(out, multiplyBank()...)
+	out = append(out, moralBank()...)
 	return out
 }
 

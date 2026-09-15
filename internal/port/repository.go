@@ -77,6 +77,12 @@ type ConfigRepository interface {
 	// UpdateEarnSettings updates earn settings for a client
 	UpdateEarnSettings(ctx context.Context, clientID string, settings domain.EarnSettings) error
 
+	// UpsertEarnTask creates or updates a custom (client-owned) earn task.
+	UpsertEarnTask(ctx context.Context, clientID string, task domain.EarnTask) (domain.EarnTask, error)
+
+	// DeleteEarnTask removes a custom earn task. Builtin tasks cannot be deleted.
+	DeleteEarnTask(ctx context.Context, clientID, taskID string) error
+
 	// IssueEarnChallenge returns next public task (bank or generated math).
 	IssueEarnChallenge(ctx context.Context, clientID, userID string) (*domain.EarnPublicTask, int, error) // task, lockRemainingSec, err
 
@@ -94,6 +100,9 @@ type ConfigRepository interface {
 
 	// ClearEarnBalances zeroes earn wallet balances for all users on a client.
 	ClearEarnBalances(ctx context.Context, clientID string) error
+
+	// AdjustEarnBalance adds (positive) or removes (negative) minutes from one user's wallet.
+	AdjustEarnBalance(ctx context.Context, clientID, userID string, delta int) (balance int, err error)
 
 	// ListEarnLog returns recent earn wallet/challenge operations (newest first).
 	ListEarnLog(ctx context.Context, clientID string, limit int) ([]domain.EarnLogEntry, error)

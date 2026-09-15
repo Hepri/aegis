@@ -11,7 +11,7 @@
     <header>
       <div>
         <h1>Банк задачек</h1>
-        <p class="muted">Просмотр вопросов по предметам (3 класс)</p>
+        <p class="muted">Просмотр встроенных и своих вопросов по разделам</p>
       </div>
       <a class="linkBtn" href="/">← В админку</a>
     </header>
@@ -27,9 +27,42 @@
     </section>
 
     <section id="browser" class="card" hidden>
+      <p id="noClientHint" class="error" hidden>Откройте банк со страницы компьютера (нужен client_id), чтобы добавлять свои вопросы.</p>
+
+      <div id="editor" class="editor cardInner" hidden>
+        <h2 id="editorTitle">Новый вопрос</h2>
+        <input type="hidden" id="taskId">
+        <label>Раздел
+          <select id="subjectSelect" class="input"></select>
+        </label>
+        <label id="subjectCustomWrap" hidden>Новый раздел
+          <input type="text" id="subjectCustom" class="input" placeholder="например: мораль / правила дома">
+        </label>
+        <label>Вопрос
+          <textarea id="prompt" class="input area" rows="3" placeholder="Текст вопроса"></textarea>
+        </label>
+        <label>Правильный ответ
+          <input type="text" id="answer" class="input" placeholder="Ответ">
+        </label>
+        <label>Варианты ответа (по одному в строке; пусто = ввод текста)
+          <textarea id="choices" class="input area" rows="4" placeholder="да&#10;нет"></textarea>
+        </label>
+        <label>Награда (мин)
+          <input type="number" id="reward" class="input narrow" min="1" max="120" value="1">
+        </label>
+        <div class="editorActions">
+          <button type="button" id="saveTaskBtn" class="primary">Сохранить</button>
+          <button type="button" id="resetTaskBtn" class="linkBtn">Сбросить форму</button>
+        </div>
+        <p id="editorMsg" class="feedback" hidden></p>
+      </div>
+
       <div class="toolbar">
         <div id="subjectTabs" class="tabs"></div>
-        <input type="search" id="search" class="input search" placeholder="Поиск по тексту…">
+        <div class="toolbarRight">
+          <label class="checkInline"><input type="checkbox" id="onlyCustom"> только мои</label>
+          <input type="search" id="search" class="input search" placeholder="Поиск по тексту…">
+        </div>
       </div>
       <p id="stats" class="muted"></p>
       <div id="list" class="list"></div>

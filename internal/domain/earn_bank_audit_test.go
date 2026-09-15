@@ -26,7 +26,12 @@ func TestAuditAllChoiceTasks(t *testing.T) {
 		if TaskKind(task) != EarnKindChoice {
 			continue
 		}
-		if len(task.Choices) != 12 {
+		if task.Subject == SubjectMoral {
+			if len(task.Choices) < 2 {
+				bad = append(bad, fmt.Sprintf("%s: %d choices", task.ID, len(task.Choices)))
+				continue
+			}
+		} else if len(task.Choices) != 12 {
 			bad = append(bad, fmt.Sprintf("%s: %d choices", task.ID, len(task.Choices)))
 			continue
 		}

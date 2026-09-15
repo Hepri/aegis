@@ -42,14 +42,12 @@ CLIENT_VERSION=20260821.1 ./deploy.sh redeploy
 ## Требования
 
 1. **SSH-ключ** — `ssh-copy-id aegis@192.168.0.234`
-2. **Парольный sudo** — один раз на сервере выполнить:
+2. **Passwordless sudo** для `systemctl` — один раз на сервере:
    ```bash
    scp deploy/sudoers.aegis aegis@192.168.0.234:/tmp/
-   ssh aegis@192.168.0.234
-   sudo cp /tmp/sudoers.aegis /etc/sudoers.d/aegis-deploy
-   sudo chmod 440 /etc/sudoers.d/aegis-deploy
+   ssh -t aegis@192.168.0.234 'sudo cp /tmp/sudoers.aegis /etc/sudoers.d/aegis-deploy && sudo chmod 440 /etc/sudoers.d/aegis-deploy'
    ```
-
+   Редеплой идёт только через `sudo -n systemctl stop/start` (без ручного kill). Orphan-процессы после старых nohup-деплоев скрипт гасит сам перед стартом.
 ## Ошибка "No route to host"
 
 Не удаётся достучаться до сервера. Проверьте:

@@ -39,7 +39,7 @@ func TestEarnRedeemCurfewAndRefund(t *testing.T) {
 	// Force "now" is hard without injecting clock; redeem uses repo.now() which is real time.
 	// So only test refund path by granting earn temp access via Redeem when allowed,
 	// or directly through repo if outside quiet hours.
-	av := domain.RedeemAvailabilityAt(time.Now().In(loc))
+	av := domain.RedeemAvailabilityAt(time.Now().In(loc), settings.RedeemSchedule)
 	if !av.Allowed {
 		t.Skip("quiet hours now; skip redeem/refund integration")
 	}
